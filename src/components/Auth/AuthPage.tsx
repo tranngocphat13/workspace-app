@@ -53,7 +53,10 @@ export function AuthPage() {
   const displayError = validationError || error;
 
   return (
-    <div className="min-h-screen bg-zinc-900 flex items-center justify-center p-4">
+    <div
+      suppressHydrationWarning
+      className="min-h-screen bg-zinc-900 flex items-center justify-center p-4"
+    >
       {/* Card */}
       <div className="w-full max-w-md bg-zinc-800 rounded-2xl shadow-2xl overflow-hidden">
         {/* Header */}
