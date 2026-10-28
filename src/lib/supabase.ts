@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import type { Message, MessageStatus, User } from '../types';
+import type { Database, Message, MessageStatus, User } from '../types';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
@@ -10,38 +10,84 @@ export const isSupabaseConfigured = Boolean(
   supabaseUrl.startsWith('http')
 );
 
-export const supabase: SupabaseClient | null = isSupabaseConfigured
-  ? createClient(supabaseUrl, supabaseAnonKey)
+export const supabase: SupabaseClient<Database> | null = isSupabaseConfigured
+  ? createClient<Database>(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    })
   : null;
 
-export function mapSupabaseMessage(row: any): Message {
+export interface SupabaseMessageRowInput {
+  id?: string | number | null;
+  channel_id?: string | null;
+  channelId?: string | null;
+  content?: string | null;
+  status?: string | null;
+  timestamp?: string | null;
+  created_at?: string | null;
+  client_message_id?: string | null;
+  sender?:
+    | {
+        id?: string | null;
+        name?: string | null;
+        avatarUrl?: string | null;
+        avatar_url?: string | null;
+        statusText?: string | null;
+        status_text?: string | null;
+      }
+    | string
+    | null;
+}
+
+export function mapSupabaseMessage(row: unknown): Message {
+  const r = (row && typeof row === 'object' ? row : {}) as SupabaseMessageRowInput;
+
   let sender: User = {
     id: 'user-system',
     name: 'Member',
-    avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop&crop=faces',
+    avatarUrl:
+      'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop&crop=faces',
     statusText: 'Online',
   };
 
-  if (row.sender && typeof row.sender === 'object') {
+  if (r.sender && typeof r.sender === 'object') {
     sender = {
-      id: row.sender.id || 'user-unknown',
-      name: row.sender.name || 'Anonymous',
-      avatarUrl: row.sender.avatarUrl || sender.avatarUrl,
-      statusText: row.sender.statusText || 'Online',
+      id: r.sender.id || 'user-unknown',
+      name: r.sender.name || 'Anonymous',
+      avatarUrl: r.sender.avatarUrl || r.sender.avatar_url || sender.avatarUrl,
+      statusText: r.sender.statusText || r.sender.status_text || 'Online',
     };
-  } else if (typeof row.sender === 'string') {
+  } else if (typeof r.sender === 'string') {
     try {
-      const parsed = JSON.parse(row.sender);
-      sender = { ...sender, ...parsed };
+      const parsed = JSON.parse(r.sender) as Record<string, unknown>;
+      sender = {
+        id: typeof parsed.id === 'string' ? parsed.id : sender.id,
+        name: typeof parsed.name === 'string' ? parsed.name : r.sender,
+        avatarUrl:
+          typeof parsed.avatarUrl === 'string'
+            ? parsed.avatarUrl
+            : typeof parsed.avatar_url === 'string'
+            ? parsed.avatar_url
+            : sender.avatarUrl,
+        statusText:
+          typeof parsed.statusText === 'string'
+            ? parsed.statusText
+            : typeof parsed.status_text === 'string'
+            ? parsed.status_text
+            : 'Online',
+      };
     } catch {
-      sender.name = row.sender;
+      sender.name = r.sender;
     }
   }
 
   const timestamp =
-    row.timestamp ||
-    (row.created_at
-      ? new Date(row.created_at).toLocaleTimeString([], {
+    r.timestamp ||
+    (r.created_at
+      ? new Date(r.created_at).toLocaleTimeString([], {
           hour: 'numeric',
           minute: '2-digit',
           hour12: true,
@@ -53,11 +99,13 @@ export function mapSupabaseMessage(row: any): Message {
         }));
 
   return {
-    id: String(row.id),
-    channelId: row.channel_id || row.channelId || 'general',
+    id: r.id !== undefined && r.id !== null ? String(r.id) : `msg-${Date.now()}`,
+    channelId: r.channel_id || r.channelId || 'general',
     sender,
-    content: row.content || '',
+    content: r.content || '',
     timestamp,
-    status: (row.status as MessageStatus) || 'sent',
+    status: (r.status as MessageStatus) || 'sent',
+    clientMessageId: r.client_message_id || undefined,
   };
 }
+

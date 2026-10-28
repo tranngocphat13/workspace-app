@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Clock, Check } from 'lucide-react';
+import { Clock, Check, AlertCircle } from 'lucide-react';
 import type { MessageStatus } from '../../types';
 
 export interface StatusIndicatorProps {
@@ -18,6 +18,19 @@ export const StatusIndicator: React.FC<StatusIndicatorProps> = ({ status }) => {
       >
         <Clock className="w-3.5 h-3.5 animate-pulse" aria-hidden="true" />
         <span className="sr-only">Sending...</span>
+      </span>
+    );
+  }
+
+  if (status === 'failed') {
+    return (
+      <span
+        data-testid="status-failed"
+        title="Failed to send"
+        className="inline-flex items-center text-red-400"
+      >
+        <AlertCircle className="w-3.5 h-3.5" aria-hidden="true" />
+        <span className="sr-only">Failed to send</span>
       </span>
     );
   }

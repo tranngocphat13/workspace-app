@@ -1,8 +1,10 @@
 'use client';
 
 import React, { useState } from 'react';
+import { RotateCcw } from 'lucide-react';
 import type { Message } from '../../types';
 import { StatusIndicator } from './StatusIndicator';
+import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 
 export interface MessageItemProps {
   message: Message;
@@ -10,6 +12,7 @@ export interface MessageItemProps {
 
 export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
   const [imageError, setImageError] = useState(false);
+  const retryMessage = useWorkspaceStore((state) => state.retryMessage);
 
   const getInitials = (name: string): string => {
     return name
@@ -24,6 +27,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
   const senderName = message.sender?.name || 'Anonymous';
   const initials = getInitials(senderName) || 'U';
   const isSending = message.status === 'sending';
+  const isFailed = message.status === 'failed';
 
   return (
     <div
@@ -31,7 +35,11 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
       data-message-id={message.id}
       data-status={message.status}
       className={`group flex items-start gap-3 p-2 rounded-lg transition-opacity ${
-        isSending ? 'opacity-70 text-zinc-300' : 'opacity-100 text-zinc-100'
+        isSending
+          ? 'opacity-70 text-zinc-300'
+          : isFailed
+          ? 'opacity-100 text-zinc-100 border border-red-500/30 bg-red-950/20'
+          : 'opacity-100 text-zinc-100'
       }`}
     >
       <div className="relative shrink-0 mt-0.5">
@@ -62,6 +70,18 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
             {message.timestamp}
           </span>
           <StatusIndicator status={message.status} />
+          {isFailed && (
+            <button
+              type="button"
+              data-testid="retry-button"
+              onClick={() => retryMessage(message.channelId, message.id)}
+              className="ml-2 inline-flex items-center gap-1 text-xs text-red-400 hover:text-red-300 underline cursor-pointer"
+              title="Retry sending"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Retry</span>
+            </button>
+          )}
         </div>
 
         <p

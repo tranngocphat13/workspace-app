@@ -14,11 +14,11 @@ export const ChatArea: React.FC = () => {
   const activeChannelId = useWorkspaceStore((state) => state.activeChannelId);
 
   useEffect(() => {
-    // 1. Fetch existing messages from Supabase 'Message' table into Zustand store
+    // 1. Fetch existing messages from Supabase 'messages' table into Zustand store
     fetchMessages(activeChannelId);
 
-    // 2. Subscribe to Supabase Realtime channel for new 'Message' inserts to update Zustand automatically
-    const unsubscribe = subscribeToRealtime();
+    // 2. Subscribe to Supabase Realtime channel for new 'messages' inserts scoped to activeChannelId
+    const unsubscribe = subscribeToRealtime(activeChannelId);
 
     return () => {
       unsubscribe();

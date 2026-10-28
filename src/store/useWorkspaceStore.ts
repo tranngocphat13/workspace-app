@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Channel, Message, User, WorkspaceStoreState } from '../types';
+import type { Channel, ChannelIconName, Message, User, WorkspaceStoreState } from '../types';
 import { supabase, isSupabaseConfigured, mapSupabaseMessage } from '../lib/supabase';
 
 const INITIAL_USER: User = {
@@ -153,6 +153,7 @@ const INITIAL_MESSAGES: Record<string, Message[]> = {
 
 const STORAGE_KEY_MESSAGES = 'workspace_persisted_messages_v1';
 const STORAGE_KEY_CHANNELS = 'workspace_persisted_channels_v1';
+const activeMessageTimers = new Set<ReturnType<typeof setTimeout>>();
 
 function getPersistedMessages(): Record<string, Message[]> | null {
   if (typeof window === 'undefined') return null;
@@ -208,8 +209,66 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     });
   },
 
+  fetchChannels: async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (!client || !isSupabaseConfigured) {
+      const cached = getPersistedChannels();
+      if (cached) {
+        set({ channels: cached });
+      }
+      return;
+    }
+
+    try {
+      let { data, error } = await client
+        .from('channels')
+        .select('*, channel_members(*, profiles(*))');
+
+      if (error) {
+        const fallback = await client.from('channels').select('*');
+        data = fallback.data;
+        error = fallback.error;
+      }
+
+      if (error) {
+        console.warn('Supabase fetchChannels error:', error.message);
+        return;
+      }
+
+      if (data && Array.isArray(data)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mappedChannels: Channel[] = data.map((ch: any) => ({
+          id: ch.id,
+          name: ch.name,
+          description: ch.description || '',
+          iconName: (ch.icon_name as ChannelIconName) || 'Hash',
+          ownerId: ch.owner_id || null,
+          createdAt: ch.created_at,
+          members: Array.isArray(ch.channel_members)
+            ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              ch.channel_members.map((cm: any) => ({
+                id: cm.profiles?.id || cm.user_id || 'unknown',
+                name: cm.profiles?.name || 'Member',
+                avatarUrl: cm.profiles?.avatar_url || '',
+                statusText: cm.profiles?.status_text || 'Online',
+              }))
+            : [get().currentUser],
+        }));
+
+        if (mappedChannels.length > 0) {
+          savePersistedChannels(mappedChannels);
+          set({ channels: mappedChannels });
+        }
+      }
+    } catch (err: unknown) {
+      console.warn('Supabase fetchChannels failed:', err);
+    }
+  },
+
   fetchMessages: async (channelId?: string) => {
-    const client = supabase;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
     if (!client || !isSupabaseConfigured) {
       const cached = getPersistedMessages();
       if (cached) {
@@ -218,12 +277,28 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       return;
     }
 
+    const targetChannelId = channelId || get().activeChannelId;
     try {
-      let query = client.from('Message').select('*');
-      if (channelId) {
-        query = query.eq('channel_id', channelId);
+      let query = client
+        .from('messages')
+        .select('*, sender:profiles(*)')
+        .order('created_at', { ascending: true });
+
+      if (targetChannelId) {
+        query = query.eq('channel_id', targetChannelId);
       }
-      const { data, error } = await query;
+
+      let { data, error } = await query;
+      if (error) {
+        const fallback = await client
+          .from('messages')
+          .select('*')
+          .eq('channel_id', targetChannelId)
+          .order('created_at', { ascending: true });
+        data = fallback.data;
+        error = fallback.error;
+      }
+
       if (error) {
         console.warn('Supabase fetchMessages error:', error.message);
         return;
@@ -235,7 +310,20 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
           const next = { ...state.messages };
           for (const msg of mappedMessages) {
             const list = next[msg.channelId] || [];
-            if (!list.some((existing) => existing.id === msg.id)) {
+            // Reconcile optimistic sending message if matching clientMessageId exists
+            const optimisticIndex = msg.clientMessageId
+              ? list.findIndex(
+                  (m) =>
+                    (m.clientMessageId === msg.clientMessageId || m.id === msg.clientMessageId) &&
+                    m.status === 'sending'
+                )
+              : -1;
+
+            if (optimisticIndex !== -1) {
+              const updated = [...list];
+              updated[optimisticIndex] = { ...msg, status: 'sent' };
+              next[msg.channelId] = updated;
+            } else if (!list.some((existing) => existing.id === msg.id)) {
               next[msg.channelId] = [...list, msg];
             }
           }
@@ -248,40 +336,98 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     }
   },
 
-  subscribeToRealtime: () => {
-    const client = supabase;
+  subscribeToRealtime: (channelId?: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    const targetChannelId = channelId || get().activeChannelId;
     if (!client || !isSupabaseConfigured) {
       return () => {};
     }
 
     const realtimeChannel = client
-      .channel('messages-realtime-sync')
+      .channel(`realtime:channel:${targetChannelId}`)
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'Message' },
-        (payload) => {
-          const newMsg = mapSupabaseMessage(payload.new);
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `channel_id=eq.${targetChannelId}`,
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        async (payload: any) => {
+          const row = payload?.new;
+          if (!row) return;
+
+          let mappedMsg = mapSupabaseMessage(row);
+
+          // If sender profile was not included in payload, hydrate it from profiles table
+          if (row.sender_id && mappedMsg.sender.id === 'user-system') {
+            try {
+              const { data: profile } = await client
+                .from('profiles')
+                .select('*')
+                .eq('id', row.sender_id)
+                .single();
+              if (profile) {
+                mappedMsg = {
+                  ...mappedMsg,
+                  sender: {
+                    id: profile.id,
+                    name: profile.name,
+                    avatarUrl: profile.avatar_url || mappedMsg.sender.avatarUrl,
+                    statusText: profile.status_text || 'Online',
+                  },
+                };
+              }
+            } catch {
+              // fallback to mappedMsg
+            }
+          }
+
           set((state) => {
-            const chId = newMsg.channelId;
+            const chId = mappedMsg.channelId || targetChannelId;
             const currentList = state.messages[chId] || [];
 
-            if (currentList.some((m) => m.id === newMsg.id)) {
-              return state;
+            // 1. If row.id already exists, idempotent update without duplicates
+            const existingIdIndex = currentList.findIndex((m) => m.id === mappedMsg.id);
+            if (existingIdIndex !== -1) {
+              const updatedList = [...currentList];
+              updatedList[existingIdIndex] = {
+                ...updatedList[existingIdIndex],
+                ...mappedMsg,
+                status: 'sent',
+              };
+              const updatedMessages = { ...state.messages, [chId]: updatedList };
+              savePersistedMessages(updatedMessages);
+              return { messages: updatedMessages };
             }
 
-            const pendingIndex = currentList.findIndex(
-              (m) =>
-                m.status === 'sending' &&
-                m.content === newMsg.content &&
-                m.sender.id === newMsg.sender.id
-            );
+            // 2. Deduplication: match against optimistic message by client_message_id
+            const clientMsgId = row.client_message_id || mappedMsg.clientMessageId;
+            let optimisticIndex = -1;
+            if (clientMsgId) {
+              optimisticIndex = currentList.findIndex(
+                (m) =>
+                  m.clientMessageId === clientMsgId ||
+                  m.id === clientMsgId
+              );
+            }
 
             let updatedList: Message[];
-            if (pendingIndex !== -1) {
+            if (optimisticIndex !== -1) {
+              // Reconcile optimistic message
               updatedList = [...currentList];
-              updatedList[pendingIndex] = newMsg;
+              updatedList[optimisticIndex] = {
+                ...updatedList[optimisticIndex],
+                id: mappedMsg.id,
+                clientMessageId: clientMsgId,
+                status: 'sent',
+                timestamp: mappedMsg.timestamp || updatedList[optimisticIndex].timestamp,
+              };
             } else {
-              updatedList = [...currentList, newMsg];
+              // New incoming message from other user: append
+              updatedList = [...currentList, { ...mappedMsg, status: 'sent' }];
             }
 
             const updatedMessages = {
@@ -293,7 +439,12 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
           });
         }
       )
-      .subscribe();
+      .subscribe((status: string) => {
+        if (status === 'SUBSCRIBED') {
+          // Reconnection resync to recover any messages dropped during reconnect
+          get().fetchMessages(targetChannelId);
+        }
+      });
 
     return () => {
       client.removeChannel(realtimeChannel);
@@ -306,10 +457,10 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       return;
     }
 
-    const tempMessageId =
+    const clientMessageId =
       typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
-        : `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+        : `client-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
     const timestamp = new Date().toLocaleTimeString([], {
       hour: 'numeric',
@@ -318,7 +469,8 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     });
 
     const newMessage: Message = {
-      id: tempMessageId,
+      id: clientMessageId,
+      clientMessageId,
       channelId,
       sender: get().currentUser,
       content: trimmed,
@@ -336,31 +488,40 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       return { messages: updatedMessages };
     });
 
-    // Supabase insert with Optimistic ID replacement
-    const client = supabase;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
     if (client && isSupabaseConfigured) {
       (async () => {
         try {
           const { data, error } = await client
-            .from('Message')
+            .from('messages')
             .insert({
               channel_id: channelId,
-              sender: get().currentUser,
+              sender_id: get().currentUser.id,
               content: trimmed,
-              timestamp,
-              status: 'sent',
+              client_message_id: clientMessageId,
             })
             .select()
             .single();
 
-          if (!error && data) {
+          if (error) {
+            throw error;
+          }
+
+          if (data) {
             const actualDbId = String(data.id);
             set((state) => {
               const currentList = state.messages[channelId];
               if (!currentList) return state;
 
+              // Guard: abort if message was purged during in-flight request
+              const exists = currentList.some(
+                (msg) => msg.clientMessageId === clientMessageId || msg.id === clientMessageId
+              );
+              if (!exists) return state;
+
               const updated = currentList.map((msg) =>
-                msg.id === tempMessageId
+                msg.clientMessageId === clientMessageId || msg.id === clientMessageId
                   ? { ...msg, id: actualDbId, status: 'sent' as const }
                   : msg
               );
@@ -374,34 +535,191 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
             });
           }
         } catch (err: unknown) {
-          console.warn('Supabase insert failed, keeping local message:', err);
+          console.warn('Supabase insert failed, transitioning to failed status:', err);
+          set((state) => {
+            const currentList = state.messages[channelId];
+            if (!currentList) return state;
+
+            const updated = currentList.map((msg) =>
+              msg.clientMessageId === clientMessageId || msg.id === clientMessageId
+                ? { ...msg, status: 'failed' as const }
+                : msg
+            );
+
+            const updatedMessages = {
+              ...state.messages,
+              [channelId]: updated,
+            };
+            savePersistedMessages(updatedMessages);
+            return { messages: updatedMessages };
+          });
         }
       })();
-    }
+    } else {
+      // Simulated 1000ms delay fallback for offline & test environment
+      const timerId = setTimeout(() => {
+        activeMessageTimers.delete(timerId);
 
-    // Simulated 1000ms delay fallback for offline & test environment
-    setTimeout(() => {
-      set((state) => {
-        const currentChannelMessages = state.messages[channelId];
-        if (!currentChannelMessages) {
-          return state;
+        set((state) => {
+          const currentChannelMessages = state.messages[channelId];
+          if (!currentChannelMessages) {
+            return state;
+          }
+
+          // Guard: abort if message was purged or state reset by logout
+          const messageExists = currentChannelMessages.some(
+            (msg) => msg.clientMessageId === clientMessageId || msg.id === clientMessageId
+          );
+          if (!messageExists) {
+            return state;
+          }
+
+          const updated = currentChannelMessages.map((msg) =>
+            msg.clientMessageId === clientMessageId || msg.id === clientMessageId
+              ? { ...msg, status: 'sent' as const }
+              : msg
+          );
+
+          const updatedMessages = {
+            ...state.messages,
+            [channelId]: updated,
+          };
+          savePersistedMessages(updatedMessages);
+
+          return {
+            messages: updatedMessages,
+          };
+        });
+      }, 1000);
+
+      activeMessageTimers.add(timerId);
+    }
+  },
+
+  retryMessage: async (channelId: string, messageId: string) => {
+    const state = get();
+    const currentList = state.messages[channelId] || [];
+    const targetMsg = currentList.find(
+      (m) => m.id === messageId || m.clientMessageId === messageId
+    );
+    if (!targetMsg) return;
+
+    const clientMessageId = targetMsg.clientMessageId || targetMsg.id;
+
+    // Transition back to 'sending'
+    set((currState) => {
+      const list = currState.messages[channelId];
+      if (!list) return currState;
+
+      const updated = list.map((m) =>
+        m.id === messageId || m.clientMessageId === messageId
+          ? { ...m, status: 'sending' as const }
+          : m
+      );
+      const updatedMessages = { ...currState.messages, [channelId]: updated };
+      savePersistedMessages(updatedMessages);
+      return { messages: updatedMessages };
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (client && isSupabaseConfigured) {
+      try {
+        const { data, error } = await client
+          .from('messages')
+          .insert({
+            channel_id: channelId,
+            sender_id: targetMsg.sender.id,
+            content: targetMsg.content,
+            client_message_id: clientMessageId,
+          })
+          .select()
+          .single();
+
+        if (error) {
+          // Handle PostgreSQL 23505 unique violation recovery
+          if (
+            error.code === '23505' ||
+            error.message?.includes('unique') ||
+            error.message?.includes('duplicate key')
+          ) {
+            const { data: existingRow } = await client
+              .from('messages')
+              .select('*')
+              .eq('client_message_id', clientMessageId)
+              .single();
+
+            const resolvedId = existingRow?.id ? String(existingRow.id) : targetMsg.id;
+
+            set((currState) => {
+              const list = currState.messages[channelId];
+              if (!list) return currState;
+
+              const updated = list.map((m) =>
+                m.id === messageId || m.clientMessageId === messageId
+                  ? { ...m, id: resolvedId, status: 'sent' as const }
+                  : m
+              );
+              const updatedMessages = { ...currState.messages, [channelId]: updated };
+              savePersistedMessages(updatedMessages);
+              return { messages: updatedMessages };
+            });
+            return;
+          }
+
+          throw error;
         }
 
-        const updated = currentChannelMessages.map((msg) =>
-          msg.id === tempMessageId ? { ...msg, status: 'sent' as const } : msg
-        );
+        const actualDbId = data?.id ? String(data.id) : targetMsg.id;
+        set((currState) => {
+          const list = currState.messages[channelId];
+          if (!list) return currState;
 
-        const updatedMessages = {
-          ...state.messages,
-          [channelId]: updated,
-        };
-        savePersistedMessages(updatedMessages);
+          const updated = list.map((m) =>
+            m.id === messageId || m.clientMessageId === messageId
+              ? { ...m, id: actualDbId, status: 'sent' as const }
+              : m
+          );
+          const updatedMessages = { ...currState.messages, [channelId]: updated };
+          savePersistedMessages(updatedMessages);
+          return { messages: updatedMessages };
+        });
+      } catch (err: unknown) {
+        console.warn('Supabase retryMessage failed:', err);
+        set((currState) => {
+          const list = currState.messages[channelId];
+          if (!list) return currState;
 
-        return {
-          messages: updatedMessages,
-        };
-      });
-    }, 1000);
+          const updated = list.map((m) =>
+            m.id === messageId || m.clientMessageId === messageId
+              ? { ...m, status: 'failed' as const }
+              : m
+          );
+          const updatedMessages = { ...currState.messages, [channelId]: updated };
+          savePersistedMessages(updatedMessages);
+          return { messages: updatedMessages };
+        });
+      }
+    } else {
+      // Offline fallback: resolve to 'sent' after 500ms
+      const timerId = setTimeout(() => {
+        activeMessageTimers.delete(timerId);
+        set((currState) => {
+          const list = currState.messages[channelId];
+          if (!list) return currState;
+
+          const updated = list.map((m) =>
+            m.id === messageId || m.clientMessageId === messageId
+              ? { ...m, status: 'sent' as const }
+              : m
+          );
+          const updatedMessages = { ...currState.messages, [channelId]: updated };
+          savePersistedMessages(updatedMessages);
+          return { messages: updatedMessages };
+        });
+      }, 500);
+      activeMessageTimers.add(timerId);
+    }
   },
 
   createChannel: async (name: string, description?: string) => {
@@ -434,16 +752,17 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       };
     });
 
-    // Supabase insert into 'Channel' table
-    const client = supabase;
+    // Supabase insert into 'channels' table
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
     if (client && isSupabaseConfigured) {
       try {
-        await client.from('Channel').insert({
+        await client.from('channels').insert({
           id: newChannel.id,
           name: newChannel.name,
           description: newChannel.description,
           icon_name: 'Hash',
-          iconName: 'Hash',
+          owner_id: get().currentUser.id,
         });
       } catch (err: unknown) {
         console.warn('Supabase createChannel insert failed:', err);
@@ -482,20 +801,44 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       return { channels: updatedChannels };
     });
 
-    // Supabase insert into 'Member' (or 'ChannelMembers') table
-    const client = supabase;
+    // Supabase insert into 'channel_members' table
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
     if (client && isSupabaseConfigured) {
       try {
-        await client.from('Member').insert({
+        await client.from('channel_members').insert({
           channel_id: channelId,
-          channelId: channelId,
           user_id: memberObj.id,
-          userId: memberObj.id,
-          name: memberObj.name,
+          role: 'member',
         });
       } catch (err: unknown) {
         console.warn('Supabase addMember insert failed:', err);
       }
     }
+  },
+
+  setCurrentUser: (user: User) => {
+    set({ currentUser: user });
+  },
+
+  resetWorkspaceState: () => {
+    // Clear all in-flight message timers to prevent post-reset execution
+    activeMessageTimers.forEach((timerId) => clearTimeout(timerId));
+    activeMessageTimers.clear();
+
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem(STORAGE_KEY_MESSAGES);
+        localStorage.removeItem(STORAGE_KEY_CHANNELS);
+      } catch {
+        // Ignore storage errors
+      }
+    }
+    set({
+      channels: INITIAL_CHANNELS,
+      activeChannelId: 'general',
+      messages: INITIAL_MESSAGES,
+      currentUser: INITIAL_USER,
+    });
   },
 }));
