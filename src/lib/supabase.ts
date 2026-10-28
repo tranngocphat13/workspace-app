@@ -28,7 +28,20 @@ export interface SupabaseMessageRowInput {
   status?: string | null;
   timestamp?: string | null;
   created_at?: string | null;
+  updated_at?: string | null;
   client_message_id?: string | null;
+  is_edited?: boolean | null;
+  isEdited?: boolean | null;
+  attachment_url?: string | null;
+  attachment_name?: string | null;
+  attachment_type?: string | null;
+  attachment_size?: number | null;
+  attachment?: {
+    url: string;
+    name: string;
+    type: string;
+    size?: number;
+  } | null;
   sender?:
     | {
         id?: string | null;
@@ -98,6 +111,22 @@ export function mapSupabaseMessage(row: unknown): Message {
           hour12: true,
         }));
 
+  const isEdited = Boolean(
+    r.is_edited ||
+    r.isEdited ||
+    (r.created_at && r.updated_at && new Date(r.updated_at).getTime() - new Date(r.created_at).getTime() > 1000)
+  );
+
+  let attachment = r.attachment || undefined;
+  if (!attachment && r.attachment_url) {
+    attachment = {
+      url: r.attachment_url,
+      name: r.attachment_name || 'attachment',
+      type: r.attachment_type || 'application/octet-stream',
+      size: r.attachment_size ?? undefined,
+    };
+  }
+
   return {
     id: r.id !== undefined && r.id !== null ? String(r.id) : `msg-${Date.now()}`,
     channelId: r.channel_id || r.channelId || 'general',
@@ -106,6 +135,8 @@ export function mapSupabaseMessage(row: unknown): Message {
     timestamp,
     status: (r.status as MessageStatus) || 'sent',
     clientMessageId: r.client_message_id || undefined,
+    isEdited,
+    attachment,
   };
 }
 

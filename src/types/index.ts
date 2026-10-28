@@ -31,6 +31,7 @@ export interface Channel {
   ownerId?: string | null;
   createdAt?: string;
   members?: User[];
+  isDm?: boolean;
 }
 
 export interface ChannelMember {
@@ -39,6 +40,13 @@ export interface ChannelMember {
   role: ChannelMemberRole;
   joinedAt: string;
   user?: User;
+}
+
+export interface MessageAttachment {
+  url: string;
+  name: string;
+  type: string;
+  size?: number;
 }
 
 export interface Message {
@@ -50,6 +58,8 @@ export interface Message {
   status: MessageStatus;
   clientMessageId?: string;
   createdAt?: string;
+  isEdited?: boolean;
+  attachment?: MessageAttachment;
 }
 
 // ─── Store State Interfaces ──────────────────────────────────────────────────
@@ -73,8 +83,19 @@ export interface WorkspaceStoreState {
   activeChannelId: string;
   messages: Record<string, Message[]>;
   currentUser: User;
+  unreadCounts: Record<string, number>;
+  notification: { id: string; title: string; message: string; channelId: string } | null;
   setActiveChannel: (channelId: string) => void;
   sendMessage: (channelId: string, content: string) => void;
+  sendMessageWithAttachment?: (channelId: string, content: string, attachment: MessageAttachment) => Promise<void> | void;
+  editMessage: (channelId: string, messageId: string, content: string) => Promise<void> | void;
+  deleteMessage: (channelId: string, messageId: string) => Promise<void> | void;
+  updateChannel: (channelId: string, updates: { name?: string; description?: string }) => Promise<void> | void;
+  deleteChannel: (channelId: string) => Promise<void> | void;
+  leaveChannel: (channelId: string) => Promise<void> | void;
+  getOrCreateDmChannel: (targetUser: User) => Promise<string>;
+  markChannelAsRead: (channelId: string) => void;
+  dismissNotification: () => void;
   retryMessage: (channelId: string, messageId: string) => Promise<void> | void;
   fetchChannels?: () => Promise<void>;
   fetchMessages: (channelId?: string) => Promise<void>;
@@ -124,6 +145,7 @@ export type ChannelRow = {
   description: string | null;
   icon_name: ChannelIconName;
   owner_id: string | null;
+  is_dm?: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -170,6 +192,11 @@ export type MessageRow = {
   sender_id: string;
   content: string;
   client_message_id: string | null;
+  is_edited?: boolean;
+  attachment_url?: string | null;
+  attachment_name?: string | null;
+  attachment_type?: string | null;
+  attachment_size?: number | null;
   created_at: string;
   updated_at: string;
 };

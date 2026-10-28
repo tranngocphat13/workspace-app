@@ -4,6 +4,7 @@ import React, { useEffect } from 'react';
 import { ChatHeader } from './ChatHeader';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
+import { InAppNotification } from './InAppNotification';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 
 export const ChatArea: React.FC = () => {
@@ -34,6 +35,7 @@ export const ChatArea: React.FC = () => {
       <ChatHeader />
       <MessageList />
       <MessageInput />
+      <InAppNotification />
     </main>
   );
 };

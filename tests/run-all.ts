@@ -32,6 +32,12 @@ async function main() {
   const tier4Res = await runSuite('Tier 4: Real-World Application Scenarios');
   summary.push({ suite: 'Tier 4: Real-World Application Scenarios', ...tier4Res });
 
+  // Tier 5: Phase 2 CHAT MVP Features
+  clearRegisteredSuites();
+  await import('./e2e/tier5-phase2-mvp.test');
+  const tier5Res = await runSuite('Tier 5: Phase 2 CHAT MVP Features');
+  summary.push({ suite: 'Tier 5: Phase 2 CHAT MVP Features', ...tier5Res });
+
   const totalTests = summary.reduce((acc, s) => acc + s.total, 0);
   const totalPassed = summary.reduce((acc, s) => acc + s.passed, 0);
   const totalFailed = summary.reduce((acc, s) => acc + s.failed, 0);

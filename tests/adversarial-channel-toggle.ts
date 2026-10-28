@@ -6,6 +6,7 @@
 import React from 'react';
 import { renderToString } from 'react-dom/server';
 import { useWorkspaceStore } from '../src/store/useWorkspaceStore';
+import { useAuthStore } from '../src/store/useAuthStore';
 import { Sidebar } from '../src/components/Sidebar/Sidebar';
 import { ChannelList } from '../src/components/Sidebar/ChannelList';
 import Home from '../src/app/page';
@@ -57,6 +58,18 @@ function resetStoreToDefault() {
       announcements: [],
       development: [],
     },
+  });
+
+  useAuthStore.setState({
+    user: {
+      id: 'challenger-2-user',
+      name: 'Challenger 2',
+      email: 'challenger2@workspace.test',
+      statusText: 'Stress Testing',
+    },
+    isInitialized: true,
+    isLoading: false,
+    error: null,
   });
 }
 

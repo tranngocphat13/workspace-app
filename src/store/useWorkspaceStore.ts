@@ -198,6 +198,18 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
   activeChannelId: 'general',
   messages: getPersistedMessages() || INITIAL_MESSAGES,
   currentUser: INITIAL_USER,
+  unreadCounts: {},
+  notification: null,
+
+  markChannelAsRead: (channelId: string) => {
+    set((state) => ({
+      unreadCounts: { ...state.unreadCounts, [channelId]: 0 },
+    }));
+  },
+
+  dismissNotification: () => {
+    set({ notification: null });
+  },
 
   setActiveChannel: (channelId: string) => {
     set((state) => {
@@ -205,7 +217,10 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       if (!channelExists || state.activeChannelId === channelId) {
         return state;
       }
-      return { activeChannelId: channelId };
+      return {
+        activeChannelId: channelId,
+        unreadCounts: { ...state.unreadCounts, [channelId]: 0 },
+      };
     });
   },
 
@@ -435,7 +450,88 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
               [chId]: updatedList,
             };
             savePersistedMessages(updatedMessages);
-            return { messages: updatedMessages };
+
+            // In-app unread tracking & notification if message is from another user in a different channel
+            const isFromOther = row.sender_id && row.sender_id !== get().currentUser.id;
+            const isOtherChannel = targetChannelId !== get().activeChannelId;
+            const nextUnread = { ...state.unreadCounts };
+            let nextNotification = state.notification;
+
+            if (isFromOther && isOtherChannel) {
+              nextUnread[targetChannelId] = (nextUnread[targetChannelId] || 0) + 1;
+              nextNotification = {
+                id: String(row.id || Date.now()),
+                title: mappedMsg.sender.name || 'New Message',
+                message: mappedMsg.content || 'New attachment received',
+                channelId: targetChannelId,
+              };
+            }
+
+            return {
+              messages: updatedMessages,
+              unreadCounts: nextUnread,
+              notification: nextNotification,
+            };
+          });
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'messages',
+          filter: `channel_id=eq.${targetChannelId}`,
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (payload: any) => {
+          const row = payload?.new;
+          if (!row) return;
+
+          set((state) => {
+            const list = state.messages[targetChannelId] || [];
+            const updated = list.map((m) =>
+              m.id === String(row.id)
+                ? {
+                    ...m,
+                    content: row.content,
+                    isEdited: true,
+                    attachment: row.attachment_url
+                      ? {
+                          url: row.attachment_url,
+                          name: row.attachment_name || 'attachment',
+                          type: row.attachment_type || 'application/octet-stream',
+                          size: row.attachment_size ?? undefined,
+                        }
+                      : m.attachment,
+                  }
+                : m
+            );
+            const next = { ...state.messages, [targetChannelId]: updated };
+            savePersistedMessages(next);
+            return { messages: next };
+          });
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'DELETE',
+          schema: 'public',
+          table: 'messages',
+          filter: `channel_id=eq.${targetChannelId}`,
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (payload: any) => {
+          const old = payload?.old;
+          if (!old?.id) return;
+
+          set((state) => {
+            const list = state.messages[targetChannelId] || [];
+            const filtered = list.filter((m) => m.id !== String(old.id));
+            const next = { ...state.messages, [targetChannelId]: filtered };
+            savePersistedMessages(next);
+            return { messages: next };
           });
         }
       )
@@ -821,6 +917,379 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     set({ currentUser: user });
   },
 
+  editMessage: async (channelId: string, messageId: string, newContent: string) => {
+    const trimmed = newContent.trim();
+    if (!trimmed) return;
+
+    set((state) => {
+      const list = state.messages[channelId];
+      if (!list) return state;
+
+      const updated = list.map((msg) =>
+        msg.id === messageId || msg.clientMessageId === messageId
+          ? { ...msg, content: trimmed, isEdited: true }
+          : msg
+      );
+      const updatedMessages = { ...state.messages, [channelId]: updated };
+      savePersistedMessages(updatedMessages);
+      return { messages: updatedMessages };
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (client && isSupabaseConfigured) {
+      try {
+        await client
+          .from('messages')
+          .update({
+            content: trimmed,
+            is_edited: true,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', messageId);
+      } catch (err) {
+        console.warn('Supabase editMessage failed:', err);
+      }
+    }
+  },
+
+  deleteMessage: async (channelId: string, messageId: string) => {
+    set((state) => {
+      const list = state.messages[channelId];
+      if (!list) return state;
+
+      const updated = list.filter(
+        (msg) => msg.id !== messageId && msg.clientMessageId !== messageId
+      );
+      const updatedMessages = { ...state.messages, [channelId]: updated };
+      savePersistedMessages(updatedMessages);
+      return { messages: updatedMessages };
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (client && isSupabaseConfigured) {
+      try {
+        await client.from('messages').delete().eq('id', messageId);
+      } catch (err) {
+        console.warn('Supabase deleteMessage failed:', err);
+      }
+    }
+  },
+
+  updateChannel: async (
+    channelId: string,
+    updates: { name?: string; description?: string }
+  ) => {
+    const cleanName = updates.name
+      ? updates.name.trim().toLowerCase().replace(/\s+/g, '-')
+      : undefined;
+    const cleanDesc =
+      updates.description !== undefined ? updates.description.trim() : undefined;
+
+    set((state) => {
+      const updatedChannels = state.channels.map((ch) =>
+        ch.id === channelId
+          ? {
+              ...ch,
+              name: cleanName || ch.name,
+              description: cleanDesc !== undefined ? cleanDesc : ch.description,
+            }
+          : ch
+      );
+      savePersistedChannels(updatedChannels);
+      return { channels: updatedChannels };
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (client && isSupabaseConfigured) {
+      try {
+        const payload: Record<string, string> = {};
+        if (cleanName) payload.name = cleanName;
+        if (cleanDesc !== undefined) payload.description = cleanDesc;
+        await client.from('channels').update(payload).eq('id', channelId);
+      } catch (err) {
+        console.warn('Supabase updateChannel failed:', err);
+      }
+    }
+  },
+
+  deleteChannel: async (channelId: string) => {
+    if (channelId === 'general') {
+      console.warn('Cannot delete default general channel');
+      return;
+    }
+
+    set((state) => {
+      const updatedChannels = state.channels.filter((ch) => ch.id !== channelId);
+      const updatedMessages = { ...state.messages };
+      delete updatedMessages[channelId];
+      const nextActiveId =
+        state.activeChannelId === channelId ? 'general' : state.activeChannelId;
+
+      savePersistedChannels(updatedChannels);
+      savePersistedMessages(updatedMessages);
+
+      return {
+        channels: updatedChannels,
+        messages: updatedMessages,
+        activeChannelId: nextActiveId,
+      };
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (client && isSupabaseConfigured) {
+      try {
+        await client.from('channels').delete().eq('id', channelId);
+      } catch (err) {
+        console.warn('Supabase deleteChannel failed:', err);
+      }
+    }
+  },
+
+  leaveChannel: async (channelId: string) => {
+    if (channelId === 'general') {
+      console.warn('Cannot leave default general channel');
+      return;
+    }
+
+    const currentUserId = get().currentUser.id;
+
+    set((state) => {
+      const channelIndex = state.channels.findIndex((c) => c.id === channelId);
+      if (channelIndex === -1) return state;
+
+      const target = state.channels[channelIndex];
+      const updatedMembers = (target.members || []).filter(
+        (m) => m.id !== currentUserId
+      );
+
+      let updatedChannels: Channel[];
+      // If user is not the owner, hide channel from user's sidebar
+      if (target.ownerId && target.ownerId !== currentUserId) {
+        updatedChannels = state.channels.filter((c) => c.id !== channelId);
+      } else {
+        updatedChannels = [...state.channels];
+        updatedChannels[channelIndex] = { ...target, members: updatedMembers };
+      }
+
+      const nextActiveId =
+        state.activeChannelId === channelId ? 'general' : state.activeChannelId;
+
+      savePersistedChannels(updatedChannels);
+      return { channels: updatedChannels, activeChannelId: nextActiveId };
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (client && isSupabaseConfigured) {
+      try {
+        await client
+          .from('channel_members')
+          .delete()
+          .eq('channel_id', channelId)
+          .eq('user_id', currentUserId);
+      } catch (err) {
+        console.warn('Supabase leaveChannel failed:', err);
+      }
+    }
+  },
+
+  getOrCreateDmChannel: async (targetUser: User): Promise<string> => {
+    const currentUser = get().currentUser;
+    if (currentUser.id === targetUser.id) {
+      return get().activeChannelId;
+    }
+
+    // Deterministic canonical DM ID sorted lexicographically
+    const sortedIds = [currentUser.id, targetUser.id].sort();
+    const dmId = `dm-${sortedIds[0]}-${sortedIds[1]}`;
+
+    // Check if channel already exists
+    const existing = get().channels.find((c) => c.id === dmId);
+    if (existing) {
+      set({ activeChannelId: dmId });
+      return dmId;
+    }
+
+    const dmChannel: Channel = {
+      id: dmId,
+      name: targetUser.name,
+      description: `Direct message with ${targetUser.name}`,
+      iconName: 'MessageSquare',
+      ownerId: currentUser.id,
+      isDm: true,
+      members: [currentUser, targetUser],
+    };
+
+    set((state) => {
+      const updatedChannels = [...state.channels, dmChannel];
+      const updatedMessages = {
+        ...state.messages,
+        [dmId]: state.messages[dmId] || [],
+      };
+      savePersistedChannels(updatedChannels);
+      savePersistedMessages(updatedMessages);
+      return {
+        channels: updatedChannels,
+        messages: updatedMessages,
+        activeChannelId: dmId,
+      };
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (client && isSupabaseConfigured) {
+      try {
+        // Try RPC first
+        const { data, error } = await client.rpc('get_or_create_dm', {
+          target_user_id: targetUser.id,
+        });
+        if (!error && data) {
+          return data;
+        }
+
+        // Fallback to table insert
+        await client.from('channels').insert({
+          id: dmId,
+          name: targetUser.name,
+          description: `Direct message with ${targetUser.name}`,
+          icon_name: 'MessageSquare',
+          owner_id: currentUser.id,
+          is_dm: true,
+        });
+
+        await client.from('channel_members').insert([
+          { channel_id: dmId, user_id: currentUser.id, role: 'member' },
+          { channel_id: dmId, user_id: targetUser.id, role: 'member' },
+        ]);
+      } catch (err) {
+        console.warn('Supabase getOrCreateDmChannel failed:', err);
+      }
+    }
+
+    return dmId;
+  },
+
+  sendMessageWithAttachment: async (
+    channelId: string,
+    content: string,
+    attachment: import('../types').MessageAttachment
+  ) => {
+    const trimmed = content.trim();
+
+    const clientMessageId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `client-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+    const timestamp = new Date().toLocaleTimeString([], {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+
+    const newMessage: Message = {
+      id: clientMessageId,
+      clientMessageId,
+      channelId,
+      sender: get().currentUser,
+      content: trimmed || attachment.name,
+      timestamp,
+      status: 'sending',
+      attachment,
+    };
+
+    set((state) => {
+      const currentChannelMessages = state.messages[channelId] || [];
+      const updatedMessages = {
+        ...state.messages,
+        [channelId]: [...currentChannelMessages, newMessage],
+      };
+      savePersistedMessages(updatedMessages);
+      return { messages: updatedMessages };
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (client && isSupabaseConfigured) {
+      try {
+        const { data, error } = await client
+          .from('messages')
+          .insert({
+            channel_id: channelId,
+            sender_id: get().currentUser.id,
+            content: trimmed || attachment.name,
+            client_message_id: clientMessageId,
+            attachment_url: attachment.url,
+            attachment_name: attachment.name,
+            attachment_type: attachment.type,
+            attachment_size: attachment.size,
+          })
+          .select()
+          .single();
+
+        if (error) throw error;
+
+        if (data) {
+          const actualDbId = String(data.id);
+          set((state) => {
+            const currentList = state.messages[channelId];
+            if (!currentList) return state;
+
+            const updated = currentList.map((msg) =>
+              msg.clientMessageId === clientMessageId ||
+              msg.id === clientMessageId
+                ? { ...msg, id: actualDbId, status: 'sent' as const }
+                : msg
+            );
+            const updatedMessages = { ...state.messages, [channelId]: updated };
+            savePersistedMessages(updatedMessages);
+            return { messages: updatedMessages };
+          });
+        }
+      } catch (err) {
+        console.warn('Supabase sendMessageWithAttachment failed:', err);
+        set((state) => {
+          const currentList = state.messages[channelId];
+          if (!currentList) return state;
+
+          const updated = currentList.map((msg) =>
+            msg.clientMessageId === clientMessageId ||
+            msg.id === clientMessageId
+              ? { ...msg, status: 'failed' as const }
+              : msg
+          );
+          const updatedMessages = { ...state.messages, [channelId]: updated };
+          savePersistedMessages(updatedMessages);
+          return { messages: updatedMessages };
+        });
+      }
+    } else {
+      // Offline fallback: simulated 1000ms delay
+      const timerId = setTimeout(() => {
+        activeMessageTimers.delete(timerId);
+        set((state) => {
+          const currentChannelMessages = state.messages[channelId];
+          if (!currentChannelMessages) return state;
+
+          const updated = currentChannelMessages.map((msg) =>
+            msg.clientMessageId === clientMessageId ||
+            msg.id === clientMessageId
+              ? { ...msg, status: 'sent' as const }
+              : msg
+          );
+          const updatedMessages = { ...state.messages, [channelId]: updated };
+          savePersistedMessages(updatedMessages);
+          return { messages: updatedMessages };
+        });
+      }, 1000);
+      activeMessageTimers.add(timerId);
+    }
+  },
+
   resetWorkspaceState: () => {
     // Clear all in-flight message timers to prevent post-reset execution
     activeMessageTimers.forEach((timerId) => clearTimeout(timerId));
@@ -839,6 +1308,8 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       activeChannelId: 'general',
       messages: INITIAL_MESSAGES,
       currentUser: INITIAL_USER,
+      unreadCounts: {},
+      notification: null,
     });
   },
 }));

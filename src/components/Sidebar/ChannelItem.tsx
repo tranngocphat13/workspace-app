@@ -19,6 +19,9 @@ interface ChannelItemProps {
 
 export const ChannelItem: React.FC<ChannelItemProps> = ({ channel, isActive }) => {
   const setActiveChannel = useWorkspaceStore((state) => state.setActiveChannel);
+  const unreadCount = useWorkspaceStore(
+    (state) => state.unreadCounts[channel.id] || 0
+  );
   const IconComponent = ICON_MAP[channel.iconName] || Hash;
 
   const handleClick = () => {
@@ -46,18 +49,31 @@ export const ChannelItem: React.FC<ChannelItemProps> = ({ channel, isActive }) =
           }`}
           aria-hidden="true"
         />
-        <span className="truncate">#{channel.name}</span>
+        <span className="truncate">
+          {channel.isDm ? `@${channel.name}` : `#${channel.name}`}
+        </span>
       </div>
 
-      {isActive && (
-        <span
-          data-testid="active-channel"
-          className="sr-only"
-          aria-hidden="true"
-        >
-          (active)
-        </span>
-      )}
+      <div className="flex items-center gap-1.5 ml-2">
+        {unreadCount > 0 && !isActive && (
+          <span
+            data-testid="unread-badge"
+            className="px-1.5 py-0.5 text-[10px] font-bold bg-blue-600 text-white rounded-full min-w-[18px] text-center leading-none"
+          >
+            {unreadCount}
+          </span>
+        )}
+
+        {isActive && (
+          <span
+            data-testid="active-channel"
+            className="sr-only"
+            aria-hidden="true"
+          >
+            (active)
+          </span>
+        )}
+      </div>
     </button>
   );
 };
