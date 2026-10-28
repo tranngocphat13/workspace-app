@@ -1,36 +1,111 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Real-time Workspace UI (`workspace-app`)
 
-## Getting Started
+Modern Real-time Workspace Communication Platform built with Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS v4, Zustand & Lucide React.
 
-First, run the development server:
+![Next.js](https://img.shields.io/badge/Next.js-16.4.3-black?style=flat&logo=next.js)
+![React](https://img.shields.io/badge/React-19.3.0-blue?style=flat&logo=react)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue?style=flat&logo=typescript)
+![TailwindCSS](https://img.shields.io/badge/TailwindCSS-v4-38bdf8?style=flat&logo=tailwindcss)
+![Zustand](https://img.shields.io/badge/Zustand-5.0-orange?style=flat)
+
+---
+
+## 🚀 Features
+
+- **Two-Column Slack/Discord-Style Layout**: Responsive layout featuring a channel sidebar and chat area.
+- **Channel Switching**: Smooth navigation between multiple channels (`#general`, `#random`, `#announcements`) with channel-scoped message feeds.
+- **Optimistic UI Updates**: Instant message rendering upon sending with state (`sending` ➔ `sent`).
+- **Simulated Real-time Resolution**: Non-blocking asynchronous message state resolution with seamless background channel switching.
+- **Zustand State Management**: Lightweight, typed in-memory client state store.
+- **Zero Duplicates & Order Preservation**: Strict message immutability and stable ordering.
+- **Comprehensive Test Suite**: End-to-end and adversarial test coverage included.
+
+---
+
+## 🛠 Tech Stack
+
+- **Framework**: Next.js 16 (App Router)
+- **Library**: React 19
+- **Language**: TypeScript
+- **Styling**: Tailwind CSS v4
+- **State Management**: Zustand
+- **Icons**: Lucide React
+- **Testing**: TSX test runner & comprehensive test suites
+
+---
+
+## 📁 Project Structure
+
+```text
+src/
+├── app/
+│   ├── layout.tsx
+│   ├── page.tsx               # Main workspace layout (Sidebar + ChatArea)
+│   └── globals.css
+├── components/
+│   ├── Chat/
+│   │   ├── ChatArea.tsx       # Main chat viewport coordinator
+│   │   ├── ChatHeader.tsx     # Channel header info
+│   │   ├── MessageInput.tsx   # Input box with auto-clear & validation
+│   │   ├── MessageItem.tsx    # Message bubble with sender and status
+│   │   ├── MessageList.tsx    # Auto-scrolling message list
+│   │   └── StatusIndicator.tsx# Sending vs. Sent visual indicator
+│   └── Sidebar/
+│       ├── ChannelItem.tsx    # Individual channel button with Lucide icon
+│       ├── ChannelList.tsx    # List of active channels
+│       ├── Sidebar.tsx        # Left sidebar navigation container
+│       ├── SidebarHeader.tsx  # Workspace branding
+│       └── UserFooter.tsx     # Current user profile badge
+├── store/
+│   └── useWorkspaceStore.ts   # Zustand store for channels, messages, and active user
+└── types/
+    └── index.ts               # Shared TypeScript data contracts
+```
+
+---
+
+## 🚦 Getting Started
+
+### Prerequisites
+
+- Node.js 18+ installed
+- npm, yarn, or pnpm
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/tranngocphat13/workspace-app.git
+
+# Navigate to the workspace directory
+cd workspace-app
+
+# Install dependencies
+npm install
+```
+
+### Running Locally
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the application in action.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Running Tests
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm test
+```
 
-## Learn More
+### Building for Production
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+---
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## 📄 License
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+MIT License.
