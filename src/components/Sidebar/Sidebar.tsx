@@ -1,45 +1,35 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { PlusCircle, UserPlus, X, Hash, UserCheck } from 'lucide-react';
 import { SidebarHeader } from './SidebarHeader';
 import { ChannelList } from './ChannelList';
 import { UserFooter } from './UserFooter';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
+import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import type { User } from '../../types';
-
-const SAMPLE_USERS: User[] = [
-  {
-    id: 'user-sarah',
-    name: 'Sarah Chen',
-    avatarUrl: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100&h=100&fit=crop&crop=faces',
-    statusText: 'Active',
-  },
-  {
-    id: 'user-michael',
-    name: 'Michael Scott',
-    avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100&h=100&fit=crop&crop=faces',
-    statusText: 'Away',
-  },
-  {
-    id: 'user-jessica',
-    name: 'Jessica Taylor',
-    avatarUrl: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=100&h=100&fit=crop&crop=faces',
-    statusText: 'Focusing',
-  },
-  {
-    id: 'user-david',
-    name: 'David Kim',
-    avatarUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=100&h=100&fit=crop&crop=faces',
-    statusText: 'Engineering',
-  },
-];
 
 export const Sidebar: React.FC = () => {
   const activeChannelId = useWorkspaceStore((state) => state.activeChannelId);
   const channels = useWorkspaceStore((state) => state.channels);
   const createChannel = useWorkspaceStore((state) => state.createChannel);
   const addMemberToChannel = useWorkspaceStore((state) => state.addMemberToChannel);
+  const currentUser = useWorkspaceStore((state) => state.currentUser);
+  const fetchChannels = useWorkspaceStore((state) => state.fetchChannels);
+  const subscribeToChannelChanges = useWorkspaceStore((state) => state.subscribeToChannelChanges);
+  const fetchUnreadCounts = useWorkspaceStore((state) => state.fetchUnreadCounts);
+  const subscribeToReadStateChanges = useWorkspaceStore((state) => state.subscribeToReadStateChanges);
+
+  useEffect(() => {
+    fetchChannels?.();
+    fetchUnreadCounts?.();
+    const unsubChannels = subscribeToChannelChanges?.();
+    const unsubReadState = subscribeToReadStateChanges?.();
+    return () => {
+      unsubChannels?.();
+      unsubReadState?.();
+    };
+  }, [fetchChannels, fetchUnreadCounts, subscribeToChannelChanges, subscribeToReadStateChanges]);
 
   const [isCreateChannelOpen, setIsCreateChannelOpen] = useState(false);
   const [newChannelName, setNewChannelName] = useState('');
@@ -48,6 +38,12 @@ export const Sidebar: React.FC = () => {
   const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
   const [selectedUserId, setSelectedUserId] = useState('');
   const [customUserId, setCustomUserId] = useState('');
+
+  // Real profiles fetched from Supabase
+  const [realProfiles, setRealProfiles] = useState<User[]>([]);
+  const [profilesLoading, setProfilesLoading] = useState(false);
+  const [profilesError, setProfilesError] = useState<string | null>(null);
+  const [addMemberError, setAddMemberError] = useState<string | null>(null);
 
   const activeChannel = channels.find((c) => c.id === activeChannelId) || channels[0];
   const activeMembers = activeChannel?.members || [];
@@ -61,23 +57,115 @@ export const Sidebar: React.FC = () => {
     setIsCreateChannelOpen(false);
   };
 
+  const handleOpenAddMember = async () => {
+    setAddMemberError(null);
+    setProfilesError(null);
+    setRealProfiles([]);
+    setSelectedUserId('');
+    setCustomUserId('');
+    setIsAddMemberOpen(true);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (client && isSupabaseConfigured && currentUser) {
+      setProfilesLoading(true);
+      try {
+        const { data, error } = await client
+          .from('profiles')
+          .select('id, name, avatar_url, status_text')
+          .neq('id', currentUser.id)
+          .order('name', { ascending: true })
+          .limit(50);
+
+        if (error) {
+          setProfilesError('Could not load users: ' + error.message);
+        } else if (data) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const users: User[] = data.map((p: any) => ({
+            id: p.id,
+            name: p.name || 'Member',
+            avatarUrl: p.avatar_url || undefined,
+            statusText: p.status_text || 'Online',
+          }));
+          setRealProfiles(users);
+        }
+      } catch {
+        setProfilesError('Could not load users');
+      } finally {
+        setProfilesLoading(false);
+      }
+    }
+    // If Supabase not configured: realProfiles stays empty, modal shows a message
+  };
+
+  const handleCloseAddMember = () => {
+    setIsAddMemberOpen(false);
+    setProfilesError(null);
+    setAddMemberError(null);
+    setSelectedUserId('');
+    setCustomUserId('');
+  };
+
   const handleAddMemberSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setAddMemberError(null);
     const targetId = customUserId.trim() || selectedUserId.trim();
     if (!targetId || !activeChannelId) return;
 
-    const matchedUser = SAMPLE_USERS.find((u) => u.id === targetId);
-    const userToAdd: User = matchedUser || {
-      id: targetId,
-      name: targetId,
-      avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(targetId)}`,
-      statusText: 'Member',
-    };
+    let userToAdd: User | null = null;
 
-    await addMemberToChannel(activeChannelId, userToAdd);
-    setSelectedUserId('');
-    setCustomUserId('');
-    setIsAddMemberOpen(false);
+    // Check in already-loaded profiles first
+    userToAdd = realProfiles.find((u) => u.id === targetId) || null;
+
+    // If not found (custom UUID entered), try to look it up from DB
+    if (!userToAdd && isSupabaseConfigured) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const client = supabase as any;
+      try {
+        const { data } = await client
+          .from('profiles')
+          .select('id, name, avatar_url, status_text')
+          .eq('id', targetId)
+          .single();
+        if (data) {
+          userToAdd = {
+            id: data.id,
+            name: data.name || 'Member',
+            avatarUrl: data.avatar_url,
+            statusText: data.status_text || 'Online',
+          };
+        }
+      } catch {
+        // not found — userToAdd stays null
+      }
+    }
+
+    if (!userToAdd) {
+      setAddMemberError('User not found. Please select a registered user.');
+      return;
+    }
+
+    // Prevent adding self
+    if (currentUser && userToAdd.id === currentUser.id) {
+      setAddMemberError('You are already a member of this channel.');
+      return;
+    }
+
+    // Check not already a member
+    if (activeMembers.some((m) => m.id === userToAdd!.id)) {
+      setAddMemberError('User is already a member of this channel.');
+      return;
+    }
+
+    try {
+      await addMemberToChannel(activeChannelId, userToAdd);
+      setSelectedUserId('');
+      setCustomUserId('');
+      setAddMemberError(null);
+      setIsAddMemberOpen(false);
+    } catch {
+      setAddMemberError('Failed to add member. Check permissions.');
+    }
   };
 
   return (
@@ -101,7 +189,7 @@ export const Sidebar: React.FC = () => {
 
         <button
           type="button"
-          onClick={() => setIsAddMemberOpen(true)}
+          onClick={() => handleOpenAddMember()}
           className="flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-md bg-zinc-800/80 hover:bg-zinc-800 text-zinc-200 hover:text-white border border-zinc-700/60 text-xs font-medium transition-colors"
           title="Thêm thành viên vào kênh (Insert into Member table)"
         >
@@ -191,7 +279,7 @@ export const Sidebar: React.FC = () => {
               </div>
               <button
                 type="button"
-                onClick={() => setIsAddMemberOpen(false)}
+                onClick={handleCloseAddMember}
                 className="text-zinc-400 hover:text-zinc-200 p-1"
               >
                 <X className="w-4 h-4" />
@@ -200,10 +288,33 @@ export const Sidebar: React.FC = () => {
             <form onSubmit={handleAddMemberSubmit} className="mt-4 space-y-3">
               <div>
                 <label className="block text-xs font-medium text-zinc-300 mb-1.5">
-                  Select User ID
+                  Select User
                 </label>
                 <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-                  {SAMPLE_USERS.map((user) => {
+                  {/* Loading state */}
+                  {profilesLoading && (
+                    <p className="text-xs text-zinc-500 italic px-1 py-2">Loading users…</p>
+                  )}
+
+                  {/* Error fetching profiles */}
+                  {profilesError && !profilesLoading && (
+                    <p className="text-xs text-red-400 px-1 py-2">{profilesError}</p>
+                  )}
+
+                  {/* Supabase not configured */}
+                  {!isSupabaseConfigured && !profilesLoading && (
+                    <p className="text-xs text-zinc-500 italic px-1 py-2">
+                      Connect Supabase to see registered users.
+                    </p>
+                  )}
+
+                  {/* No users found */}
+                  {isSupabaseConfigured && !profilesLoading && !profilesError && realProfiles.length === 0 && (
+                    <p className="text-xs text-zinc-500 italic px-1 py-2">No other users found.</p>
+                  )}
+
+                  {/* Real profile list */}
+                  {realProfiles.map((user) => {
                     const isAlreadyMember = activeMembers.some((m) => m.id === user.id);
                     return (
                       <button
@@ -213,6 +324,7 @@ export const Sidebar: React.FC = () => {
                         onClick={() => {
                           setSelectedUserId(user.id);
                           setCustomUserId('');
+                          setAddMemberError(null);
                         }}
                         className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg border text-xs text-left transition-colors ${
                           isAlreadyMember
@@ -223,17 +335,22 @@ export const Sidebar: React.FC = () => {
                         }`}
                       >
                         <div className="flex items-center gap-2 min-w-0">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
-                            src={user.avatarUrl}
-                            alt={user.name}
-                            className="w-5 h-5 rounded-full object-cover shrink-0"
-                          />
+                          {user.avatarUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={user.avatarUrl}
+                              alt={user.name}
+                              className="w-5 h-5 rounded-full object-cover shrink-0"
+                            />
+                          ) : (
+                            <div className="w-5 h-5 rounded-full bg-zinc-700 flex items-center justify-center text-[9px] font-semibold text-zinc-300 shrink-0">
+                              {user.name.charAt(0).toUpperCase()}
+                            </div>
+                          )}
                           <span className="truncate">{user.name}</span>
-                          <span className="text-[10px] text-zinc-500">({user.id})</span>
                         </div>
                         {isAlreadyMember && (
-                          <span className="text-[10px] text-zinc-500 flex items-center gap-0.5">
+                          <span className="text-[10px] text-zinc-500 flex items-center gap-0.5 shrink-0 ml-2">
                             <UserCheck className="w-3 h-3" /> Joined
                           </span>
                         )}
@@ -245,24 +362,30 @@ export const Sidebar: React.FC = () => {
 
               <div>
                 <label className="block text-xs font-medium text-zinc-300 mb-1">
-                  Or Enter User ID Manually
+                  Or Enter User UUID
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. user-alex or user-123"
+                  placeholder="e.g. 550e8400-e29b-41d4-a716-…"
                   value={customUserId}
                   onChange={(e) => {
                     setCustomUserId(e.target.value);
                     setSelectedUserId('');
+                    setAddMemberError(null);
                   }}
                   className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-blue-500"
                 />
               </div>
 
+              {/* Inline error message */}
+              {addMemberError && (
+                <p className="text-xs text-red-400">{addMemberError}</p>
+              )}
+
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setIsAddMemberOpen(false)}
+                  onClick={handleCloseAddMember}
                   className="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
                 >
                   Cancel

@@ -94,12 +94,15 @@ export interface WorkspaceStoreState {
   deleteChannel: (channelId: string) => Promise<void> | void;
   leaveChannel: (channelId: string) => Promise<void> | void;
   getOrCreateDmChannel: (targetUser: User) => Promise<string>;
-  markChannelAsRead: (channelId: string) => void;
+  markChannelAsRead: (channelId: string) => void | Promise<void>;
+  fetchUnreadCounts?: () => Promise<void>;
   dismissNotification: () => void;
   retryMessage: (channelId: string, messageId: string) => Promise<void> | void;
   fetchChannels?: () => Promise<void>;
   fetchMessages: (channelId?: string) => Promise<void>;
   subscribeToRealtime: (channelId?: string) => () => void;
+  subscribeToChannelChanges?: () => () => void;
+  subscribeToReadStateChanges?: () => () => void;
   createChannel: (name: string, description?: string) => Promise<void> | void;
   addMemberToChannel: (channelId: string, user: User | string) => Promise<void> | void;
   setCurrentUser: (user: User) => void;

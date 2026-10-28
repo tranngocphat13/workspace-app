@@ -3,14 +3,18 @@
 import React, { useEffect, useRef } from 'react';
 import { MessageSquare } from 'lucide-react';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
+import type { Message } from '../../types';
 import { MessageItem } from './MessageItem';
+
+const EMPTY_MESSAGES: Message[] = [];
 
 export const MessageList: React.FC = () => {
   const activeChannelId = useWorkspaceStore((state) => state.activeChannelId);
   const channels = useWorkspaceStore((state) => state.channels);
-  const messages = useWorkspaceStore(
-    (state) => state.messages[activeChannelId] || []
+  const channelMessages = useWorkspaceStore(
+    (state) => state.messages[activeChannelId]
   );
+  const messages = channelMessages || EMPTY_MESSAGES;
 
   const activeChannel =
     channels.find((channel) => channel.id === activeChannelId) || channels[0];
@@ -19,7 +23,7 @@ export const MessageList: React.FC = () => {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, messages]);
+  }, [messages]);
 
   if (messages.length === 0) {
     return (

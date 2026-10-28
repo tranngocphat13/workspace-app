@@ -64,12 +64,10 @@ export async function uploadAttachment(
       throw new Error(`Upload failed: ${uploadError.message}`);
     }
 
-    const { data: urlData } = client.storage
-      .from('chat-attachments')
-      .getPublicUrl(filePath);
-
+    // Return storage path instead of public URL.
+    // Signed URLs are generated on render in MessageItem.tsx via getSignedUrl().
     return {
-      url: urlData.publicUrl,
+      url: filePath,
       name: file.name,
       type: file.type,
       size: file.size,
@@ -90,4 +88,40 @@ export async function uploadAttachment(
     reader.onerror = () => reject(new Error('Failed to read file locally'));
     reader.readAsDataURL(file);
   });
+}
+
+/**
+ * Returns true when `url` is a bare Supabase Storage object path (e.g. "uuid/ts-file.png")
+ * rather than an absolute URL (http/https) or inline data (data: / blob:).
+ * Used by MessageItem to decide whether to fetch a signed URL.
+ */
+export function isStoragePath(url: string): boolean {
+  if (!url) return false;
+  if (url.startsWith('http') || url.startsWith('data:') || url.startsWith('blob:')) return false;
+  return true;
+}
+
+/**
+ * Generates a short-lived signed URL for a private-bucket storage path.
+ * Returns null if Supabase is not configured or the request fails.
+ *
+ * @param storagePath - Bare object path, e.g. "userId/1234567890-file.png"
+ * @param expiresInSeconds - TTL in seconds (default 3600 = 1 hour)
+ */
+export async function getSignedUrl(
+  storagePath: string,
+  expiresInSeconds = 3600
+): Promise<string | null> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const client = supabase as any;
+  if (!client || !isSupabaseConfigured) return null;
+  try {
+    const { data, error } = await client.storage
+      .from('chat-attachments')
+      .createSignedUrl(storagePath, expiresInSeconds);
+    if (error || !data?.signedUrl) return null;
+    return data.signedUrl as string;
+  } catch {
+    return null;
+  }
 }

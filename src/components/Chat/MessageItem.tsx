@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { RotateCcw, Pencil, Trash2, Check, X, FileText, Download, ExternalLink } from 'lucide-react';
 import type { Message } from '../../types';
 import { StatusIndicator } from './StatusIndicator';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
+import { getSignedUrl, isStoragePath } from '../../lib/storage';
 
 export interface MessageItemProps {
   message: Message;
@@ -14,6 +15,36 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
   const [imageError, setImageError] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
+
+  const rawAttachmentUrl = message.attachment?.url;
+  const isPath = rawAttachmentUrl ? isStoragePath(rawAttachmentUrl) : false;
+
+  // Resolved URL for private-bucket paths (fetched as 1-hour signed URL).
+  // For legacy public / data: URLs, rawAttachmentUrl is used directly.
+  const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  const [attachmentUrlExpired, setAttachmentUrlExpired] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!rawAttachmentUrl || !isPath) {
+      return;
+    }
+
+    getSignedUrl(rawAttachmentUrl).then((url) => {
+      if (cancelled) return;
+      if (url) {
+        setSignedUrl(url);
+      } else {
+        setAttachmentUrlExpired(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rawAttachmentUrl, isPath]);
+
+  const resolvedAttachmentUrl = isPath ? signedUrl : rawAttachmentUrl || null;
 
   const currentUser = useWorkspaceStore((state) => state.currentUser);
   const editMessage = useWorkspaceStore((state) => state.editMessage);
@@ -204,54 +235,74 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
             {/* Attachment preview / download link */}
             {message.attachment && (
               <div className="mt-2">
-                {message.attachment.type.startsWith('image/') ? (
-                  <div className="max-w-xs sm:max-w-sm rounded-lg overflow-hidden border border-zinc-700/80 bg-zinc-800/60">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={message.attachment.url}
-                      alt={message.attachment.name}
-                      className="max-h-60 w-auto object-cover rounded-t-lg"
-                    />
-                    <div className="p-2 flex items-center justify-between text-xs text-zinc-300">
-                      <span className="truncate max-w-[180px] font-medium">
-                        {message.attachment.name}
-                      </span>
-                      <a
-                        href={message.attachment.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300 ml-2"
-                        title="Open image"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        <span>View</span>
-                      </a>
-                    </div>
+                {/* Show a subtle notice while the signed URL is being fetched */}
+                {!resolvedAttachmentUrl && !attachmentUrlExpired && (
+                  <p className="text-xs text-zinc-500 italic">Loading attachment…</p>
+                )}
+
+                {/* Graceful expired / unavailable state */}
+                {attachmentUrlExpired && (
+                  <div className="inline-flex items-center gap-2 p-2 rounded-lg border border-zinc-700/60 bg-zinc-800/60 text-xs text-zinc-400">
+                    <FileText className="w-4 h-4 shrink-0" />
+                    <span>
+                      <span className="font-medium text-zinc-300">{message.attachment.name}</span>
+                      {' — '}attachment unavailable (link expired or access denied)
+                    </span>
                   </div>
-                ) : (
-                  <div className="inline-flex items-center gap-3 p-2.5 rounded-lg border border-zinc-700/80 bg-zinc-800/80 hover:bg-zinc-800 text-zinc-200 max-w-sm">
-                    <div className="p-2 rounded bg-blue-950/60 text-blue-400">
-                      <FileText className="w-5 h-5" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-semibold truncate">
-                        {message.attachment.name}
-                      </p>
-                      <p className="text-[10px] text-zinc-400">
-                        {formatFileSize(message.attachment.size)}
-                      </p>
-                    </div>
-                    <a
-                      href={message.attachment.url}
-                      download={message.attachment.name}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="p-1.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors"
-                      title="Download file"
-                    >
-                      <Download className="w-4 h-4" />
-                    </a>
-                  </div>
+                )}
+
+                {resolvedAttachmentUrl && (
+                  <>
+                    {message.attachment.type.startsWith('image/') ? (
+                      <div className="max-w-xs sm:max-w-sm rounded-lg overflow-hidden border border-zinc-700/80 bg-zinc-800/60">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={resolvedAttachmentUrl}
+                          alt={message.attachment.name}
+                          className="max-h-60 w-auto object-cover rounded-t-lg"
+                        />
+                        <div className="p-2 flex items-center justify-between text-xs text-zinc-300">
+                          <span className="truncate max-w-[180px] font-medium">
+                            {message.attachment.name}
+                          </span>
+                          <a
+                            href={resolvedAttachmentUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300 ml-2"
+                            title="Open image"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            <span>View</span>
+                          </a>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="inline-flex items-center gap-3 p-2.5 rounded-lg border border-zinc-700/80 bg-zinc-800/80 hover:bg-zinc-800 text-zinc-200 max-w-sm">
+                        <div className="p-2 rounded bg-blue-950/60 text-blue-400">
+                          <FileText className="w-5 h-5" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-semibold truncate">
+                            {message.attachment.name}
+                          </p>
+                          <p className="text-[10px] text-zinc-400">
+                            {formatFileSize(message.attachment.size)}
+                          </p>
+                        </div>
+                        <a
+                          href={resolvedAttachmentUrl}
+                          download={message.attachment.name}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="p-1.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors"
+                          title="Download file"
+                        >
+                          <Download className="w-4 h-4" />
+                        </a>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}

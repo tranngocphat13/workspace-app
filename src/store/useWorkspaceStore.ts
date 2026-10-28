@@ -154,6 +154,7 @@ const INITIAL_MESSAGES: Record<string, Message[]> = {
 const STORAGE_KEY_MESSAGES = 'workspace_persisted_messages_v1';
 const STORAGE_KEY_CHANNELS = 'workspace_persisted_channels_v1';
 const activeMessageTimers = new Set<ReturnType<typeof setTimeout>>();
+let isLastReadAtSupported = true;
 
 function getPersistedMessages(): Record<string, Message[]> | null {
   if (typeof window === 'undefined') return null;
@@ -201,10 +202,96 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
   unreadCounts: {},
   notification: null,
 
-  markChannelAsRead: (channelId: string) => {
+  markChannelAsRead: async (channelId: string) => {
+    // Optimistic in-memory update
     set((state) => ({
       unreadCounts: { ...state.unreadCounts, [channelId]: 0 },
     }));
+
+    if (!isLastReadAtSupported) return;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (!client || !isSupabaseConfigured) return;
+
+    const currentUserId = get().currentUser.id;
+    if (!currentUserId || currentUserId.startsWith('user-')) return;
+
+    const now = new Date().toISOString();
+
+    try {
+      const { error } = await client
+        .from('channel_members')
+        .update({ last_read_at: now })
+        .eq('channel_id', channelId)
+        .eq('user_id', currentUserId)
+        .lt('last_read_at', now); // only update if current value is older
+
+      if (error) {
+        if (error.code === 'PGRST204' || error.message?.includes('last_read_at')) {
+          isLastReadAtSupported = false;
+        }
+        console.warn('markChannelAsRead persist failed:', error.message);
+      }
+    } catch (err: unknown) {
+      if ((err as { message?: string })?.message?.includes('last_read_at')) {
+        isLastReadAtSupported = false;
+      }
+      console.warn('markChannelAsRead persist failed:', err);
+    }
+  },
+
+  fetchUnreadCounts: async () => {
+    if (!isLastReadAtSupported) return;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (!client || !isSupabaseConfigured) return;
+
+    const currentUserId = get().currentUser.id;
+    if (!currentUserId || currentUserId.startsWith('user-')) return;
+
+    try {
+      // Get all memberships with last_read_at
+      const { data: memberships, error: memErr } = await client
+        .from('channel_members')
+        .select('channel_id, last_read_at')
+        .eq('user_id', currentUserId);
+
+      if (memErr) {
+        if (memErr.code === 'PGRST204' || memErr.message?.includes('last_read_at')) {
+          isLastReadAtSupported = false;
+        }
+        return;
+      }
+      if (!memberships) return;
+
+      const counts: Record<string, number> = {};
+
+      // For each membership, count messages after last_read_at from other users
+      await Promise.all(
+        memberships.map(async (m: { channel_id: string; last_read_at: string }) => {
+          if (!m.last_read_at) return;
+          const { count, error } = await client
+            .from('messages')
+            .select('id', { count: 'exact', head: true })
+            .eq('channel_id', m.channel_id)
+            .neq('sender_id', currentUserId)
+            .gt('created_at', m.last_read_at);
+
+          if (!error && count !== null) {
+            counts[m.channel_id] = count;
+          }
+        })
+      );
+
+      set({ unreadCounts: counts });
+    } catch (err: unknown) {
+      if ((err as { message?: string })?.message?.includes('last_read_at')) {
+        isLastReadAtSupported = false;
+      }
+      console.warn('fetchUnreadCounts failed:', err);
+    }
   },
 
   dismissNotification: () => {
@@ -222,6 +309,32 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
         unreadCounts: { ...state.unreadCounts, [channelId]: 0 },
       };
     });
+    // Persist read state for the newly activated channel
+    if (!isLastReadAtSupported) return;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (client && isSupabaseConfigured) {
+      const currentUserId = get().currentUser.id;
+      if (currentUserId && !currentUserId.startsWith('user-')) {
+        const now = new Date().toISOString();
+        client
+          .from('channel_members')
+          .update({ last_read_at: now })
+          .eq('channel_id', channelId)
+          .eq('user_id', currentUserId)
+          .lt('last_read_at', now)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .then(({ error }: { error: any }) => {
+            if (error) {
+              if (error.code === 'PGRST204' || error.message?.includes('last_read_at')) {
+                isLastReadAtSupported = false;
+              }
+              console.warn('setActiveChannel read persist failed:', error.message);
+            }
+          });
+      }
+    }
   },
 
   fetchChannels: async () => {
@@ -260,6 +373,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
           iconName: (ch.icon_name as ChannelIconName) || 'Hash',
           ownerId: ch.owner_id || null,
           createdAt: ch.created_at,
+          isDm: ch.is_dm === true || ch.is_dm === 'true',
           members: Array.isArray(ch.channel_members)
             ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
               ch.channel_members.map((cm: any) => ({
@@ -473,6 +587,13 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
               notification: nextNotification,
             };
           });
+
+          // Auto-mark as read if user is currently viewing this channel and message is from someone else
+          const isFromOther = row.sender_id && row.sender_id !== get().currentUser.id;
+          const isActiveChannel = targetChannelId === get().activeChannelId;
+          if (isFromOther && isActiveChannel) {
+            get().markChannelAsRead(targetChannelId);
+          }
         }
       )
       .on(
@@ -877,6 +998,9 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
           }
         : user;
 
+    // Save previous channels state for rollback
+    const previousChannels = get().channels;
+
     set((state) => {
       const channelIndex = state.channels.findIndex((c) => c.id === channelId);
       if (channelIndex === -1) return state;
@@ -901,14 +1025,28 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const client = supabase as any;
     if (client && isSupabaseConfigured) {
-      try {
-        await client.from('channel_members').insert({
-          channel_id: channelId,
-          user_id: memberObj.id,
-          role: 'member',
+      const { error } = await client.from('channel_members').insert({
+        channel_id: channelId,
+        user_id: memberObj.id,
+        role: 'member',
+      });
+
+      if (error) {
+        // Rollback: restore previous channels if the channel still exists
+        set((state) => {
+          const channelStillExists = state.channels.some((c) => c.id === channelId);
+          if (!channelStillExists) return state;
+          savePersistedChannels(previousChannels);
+          return {
+            channels: previousChannels,
+            notification: {
+              id: `err-${Date.now()}`,
+              title: 'Error',
+              message: error.message || 'Could not add member. Check permissions.',
+              channelId,
+            },
+          };
         });
-      } catch (err: unknown) {
-        console.warn('Supabase addMember insert failed:', err);
       }
     }
   },
@@ -921,6 +1059,10 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     const trimmed = newContent.trim();
     if (!trimmed) return;
 
+    // Save previous messages for rollback
+    const previousMessages = get().messages[channelId];
+
+    // Optimistic update
     set((state) => {
       const list = state.messages[channelId];
       if (!list) return state;
@@ -938,22 +1080,44 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const client = supabase as any;
     if (client && isSupabaseConfigured) {
-      try {
-        await client
-          .from('messages')
-          .update({
-            content: trimmed,
-            is_edited: true,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', messageId);
-      } catch (err) {
-        console.warn('Supabase editMessage failed:', err);
+      const { error } = await client
+        .from('messages')
+        .update({
+          content: trimmed,
+          is_edited: true,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', messageId);
+
+      if (error) {
+        // Rollback: restore previous state only if the channel messages haven't been replaced
+        set((state) => {
+          const currentList = state.messages[channelId];
+          if (!currentList || !previousMessages) return state;
+          const updatedMessages = { ...state.messages, [channelId]: previousMessages };
+          savePersistedMessages(updatedMessages);
+          return {
+            messages: updatedMessages,
+            notification: {
+              id: `err-${Date.now()}`,
+              title: 'Edit Failed',
+              message: error.message || 'Could not edit message. Check permissions.',
+              channelId,
+            },
+          };
+        });
       }
     }
   },
 
   deleteMessage: async (channelId: string, messageId: string) => {
+    // Save the full message object for rollback on failure
+    const previousMessages = get().messages[channelId];
+    const messageToDelete = previousMessages?.find(
+      (msg) => msg.id === messageId || msg.clientMessageId === messageId
+    );
+
+    // Optimistic removal
     set((state) => {
       const list = state.messages[channelId];
       if (!list) return state;
@@ -969,10 +1133,29 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const client = supabase as any;
     if (client && isSupabaseConfigured) {
-      try {
-        await client.from('messages').delete().eq('id', messageId);
-      } catch (err) {
-        console.warn('Supabase deleteMessage failed:', err);
+      const { error } = await client.from('messages').delete().eq('id', messageId);
+
+      if (error) {
+        // Rollback: re-insert the deleted message if it was saved and channel still exists
+        set((state) => {
+          const currentList = state.messages[channelId];
+          if (!currentList || !messageToDelete) return state;
+          // Re-insert at original position (append to current list to avoid index complexity)
+          const restored = [...currentList, messageToDelete].sort(
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
+          const updatedMessages = { ...state.messages, [channelId]: restored };
+          savePersistedMessages(updatedMessages);
+          return {
+            messages: updatedMessages,
+            notification: {
+              id: `err-${Date.now()}`,
+              title: 'Delete Failed',
+              message: error.message || 'Could not delete message. Check permissions.',
+              channelId,
+            },
+          };
+        });
       }
     }
   },
@@ -987,6 +1170,10 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     const cleanDesc =
       updates.description !== undefined ? updates.description.trim() : undefined;
 
+    // Save previous channel state for rollback
+    const previousChannels = get().channels;
+
+    // Optimistic update
     set((state) => {
       const updatedChannels = state.channels.map((ch) =>
         ch.id === channelId
@@ -1004,13 +1191,28 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const client = supabase as any;
     if (client && isSupabaseConfigured) {
-      try {
-        const payload: Record<string, string> = {};
-        if (cleanName) payload.name = cleanName;
-        if (cleanDesc !== undefined) payload.description = cleanDesc;
-        await client.from('channels').update(payload).eq('id', channelId);
-      } catch (err) {
-        console.warn('Supabase updateChannel failed:', err);
+      const payload: Record<string, string> = {};
+      if (cleanName) payload.name = cleanName;
+      if (cleanDesc !== undefined) payload.description = cleanDesc;
+
+      const { error } = await client.from('channels').update(payload).eq('id', channelId);
+
+      if (error) {
+        // Rollback: restore previous channel list if the channel still exists
+        set((state) => {
+          const channelStillExists = state.channels.some((c) => c.id === channelId);
+          if (!channelStillExists) return state;
+          savePersistedChannels(previousChannels);
+          return {
+            channels: previousChannels,
+            notification: {
+              id: `err-${Date.now()}`,
+              title: 'Update Failed',
+              message: error.message || 'Could not update channel. Check permissions.',
+              channelId,
+            },
+          };
+        });
       }
     }
   },
@@ -1021,6 +1223,26 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       return;
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (client && isSupabaseConfigured) {
+      // Do DB call FIRST — destructive action should be confirmed before state update
+      const { error } = await client.from('channels').delete().eq('id', channelId);
+
+      if (error) {
+        set({
+          notification: {
+            id: `err-${Date.now()}`,
+            title: 'Delete Failed',
+            message: error.message || 'Could not delete channel. Check permissions.',
+            channelId,
+          },
+        });
+        return;
+      }
+    }
+
+    // Only update state after DB confirms deletion (or when Supabase is not configured)
     set((state) => {
       const updatedChannels = state.channels.filter((ch) => ch.id !== channelId);
       const updatedMessages = { ...state.messages };
@@ -1037,16 +1259,6 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
         activeChannelId: nextActiveId,
       };
     });
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
-    if (client && isSupabaseConfigured) {
-      try {
-        await client.from('channels').delete().eq('id', channelId);
-      } catch (err) {
-        console.warn('Supabase deleteChannel failed:', err);
-      }
-    }
   },
 
   leaveChannel: async (channelId: string) => {
@@ -1057,6 +1269,11 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
 
     const currentUserId = get().currentUser.id;
 
+    // Save previous channels state for rollback
+    const previousChannels = get().channels;
+    const previousActiveChannelId = get().activeChannelId;
+
+    // Optimistic update
     set((state) => {
       const channelIndex = state.channels.findIndex((c) => c.id === channelId);
       if (channelIndex === -1) return state;
@@ -1085,14 +1302,27 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const client = supabase as any;
     if (client && isSupabaseConfigured) {
-      try {
-        await client
-          .from('channel_members')
-          .delete()
-          .eq('channel_id', channelId)
-          .eq('user_id', currentUserId);
-      } catch (err) {
-        console.warn('Supabase leaveChannel failed:', err);
+      const { error } = await client
+        .from('channel_members')
+        .delete()
+        .eq('channel_id', channelId)
+        .eq('user_id', currentUserId);
+
+      if (error) {
+        // Rollback: restore channels to previous state
+        set(() => {
+          savePersistedChannels(previousChannels);
+          return {
+            channels: previousChannels,
+            activeChannelId: previousActiveChannelId,
+            notification: {
+              id: `err-${Date.now()}`,
+              title: 'Leave Failed',
+              message: error.message || 'Could not leave channel. Check permissions.',
+              channelId,
+            },
+          };
+        });
       }
     }
   },
@@ -1147,26 +1377,44 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
         const { data, error } = await client.rpc('get_or_create_dm', {
           target_user_id: targetUser.id,
         });
-        if (!error && data) {
-          return data;
+        if (error) {
+          // RPC failed — rollback the optimistic channel we just added
+          set((state) => {
+            const updatedChannels = state.channels.filter((c) => c.id !== dmId);
+            const updatedMessages = { ...state.messages };
+            delete updatedMessages[dmId];
+            savePersistedChannels(updatedChannels);
+            savePersistedMessages(updatedMessages);
+            return {
+              channels: updatedChannels,
+              messages: updatedMessages,
+              activeChannelId: get().activeChannelId,
+            };
+          });
+          throw new Error(error.message || 'Failed to create DM');
         }
-
-        // Fallback to table insert
-        await client.from('channels').insert({
-          id: dmId,
-          name: targetUser.name,
-          description: `Direct message with ${targetUser.name}`,
-          icon_name: 'MessageSquare',
-          owner_id: currentUser.id,
-          is_dm: true,
-        });
-
-        await client.from('channel_members').insert([
-          { channel_id: dmId, user_id: currentUser.id, role: 'member' },
-          { channel_id: dmId, user_id: targetUser.id, role: 'member' },
-        ]);
+        // RPC returns the canonical DM channel id — use it
+        if (data && data !== dmId) {
+          // Update state to use the canonical id from server
+          set((state) => {
+            const updatedChannels = state.channels.map((c) =>
+              c.id === dmId ? { ...c, id: data } : c
+            );
+            const msgs = { ...state.messages };
+            if (msgs[dmId]) {
+              msgs[data] = msgs[dmId];
+              delete msgs[dmId];
+            }
+            savePersistedChannels(updatedChannels);
+            savePersistedMessages(msgs);
+            return { channels: updatedChannels, messages: msgs, activeChannelId: data };
+          });
+          return data as string;
+        }
       } catch (err) {
-        console.warn('Supabase getOrCreateDmChannel failed:', err);
+        console.warn('Supabase getOrCreateDmChannel RPC failed:', err);
+        // Re-throw so caller can handle
+        throw err;
       }
     }
 
@@ -1288,6 +1536,111 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       }, 1000);
       activeMessageTimers.add(timerId);
     }
+  },
+
+  subscribeToChannelChanges: () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (!client || !isSupabaseConfigured) return () => {};
+
+    const channel = client
+      .channel('realtime:channels-global')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'channels' },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (payload: any) => {
+          const row = payload?.new;
+          if (!row) return;
+          set((state) => {
+            if (state.channels.some((c) => c.id === row.id)) return state;
+            const newCh: Channel = {
+              id: row.id,
+              name: row.name,
+              description: row.description || '',
+              iconName: (row.icon_name as ChannelIconName) || 'Hash',
+              ownerId: row.owner_id || null,
+              isDm: row.is_dm === true,
+              members: [],
+            };
+            const updated = [...state.channels, newCh];
+            savePersistedChannels(updated);
+            return { channels: updated };
+          });
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'channels' },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (payload: any) => {
+          const row = payload?.new;
+          if (!row) return;
+          set((state) => {
+            const updated = state.channels.map((c) =>
+              c.id === row.id
+                ? { ...c, name: row.name, description: row.description || c.description }
+                : c
+            );
+            savePersistedChannels(updated);
+            return { channels: updated };
+          });
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'channels' },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (payload: any) => {
+          const old = payload?.old;
+          if (!old?.id) return;
+          set((state) => {
+            const updated = state.channels.filter((c) => c.id !== old.id);
+            const nextActiveId =
+              state.activeChannelId === old.id ? 'general' : state.activeChannelId;
+            savePersistedChannels(updated);
+            return { channels: updated, activeChannelId: nextActiveId };
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      client.removeChannel(channel);
+    };
+  },
+
+  subscribeToReadStateChanges: () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = supabase as any;
+    if (!client || !isSupabaseConfigured) return () => {};
+
+    const currentUserId = get().currentUser.id;
+    if (!currentUserId || currentUserId.startsWith('user-')) return () => {};
+
+    const channel = client
+      .channel(`realtime:read-state:${currentUserId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'channel_members',
+          filter: `user_id=eq.${currentUserId}`,
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (payload: any) => {
+          const row = payload?.new;
+          if (!row?.channel_id || !row?.last_read_at) return;
+          // Another device updated read state — re-fetch unread counts for all channels
+          get().fetchUnreadCounts?.();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      client.removeChannel(channel);
+    };
   },
 
   resetWorkspaceState: () => {
