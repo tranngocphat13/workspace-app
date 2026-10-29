@@ -18,6 +18,7 @@ import { ChannelList } from '../src/components/Sidebar/ChannelList';
 import { ChannelItem } from '../src/components/Sidebar/ChannelItem';
 import { UserFooter } from '../src/components/Sidebar/UserFooter';
 import { useWorkspaceStore } from '../src/store/useWorkspaceStore';
+import { useAuthStore } from '../src/store/useAuthStore';
 import type { Channel } from '../src/types';
 
 // ============================================================================
@@ -67,6 +68,10 @@ function assert(condition: boolean, testName: string, detail?: string) {
 }
 
 function resetTestStore(): void {
+  useAuthStore.setState({
+    isInitialized: true,
+    user: { id: 'usr-1', email: '', name: 'Alex Johnson' },
+  });
   useWorkspaceStore.setState({
     channels: [
       { id: 'general', name: 'general', description: 'General workspace chat', iconName: 'Hash' },

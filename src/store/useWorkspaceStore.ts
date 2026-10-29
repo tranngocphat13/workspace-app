@@ -1,5 +1,16 @@
 import { create } from 'zustand';
-import type { Channel, ChannelIconName, Message, User, WorkspaceStoreState } from '../types';
+import type {
+  Channel,
+  ChannelIconName,
+  Message,
+  User,
+  WorkspaceStoreState,
+  ChannelRow,
+  ChannelUpdate,
+  ChannelMemberRow,
+  MessageRow,
+} from '../types';
+import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured, mapSupabaseMessage } from '../lib/supabase';
 
 const INITIAL_USER: User = {
@@ -210,8 +221,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
 
     if (!isLastReadAtSupported) return;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (!client || !isSupabaseConfigured) return;
 
     const currentUserId = get().currentUser.id;
@@ -244,8 +254,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
   fetchUnreadCounts: async () => {
     if (!isLastReadAtSupported) return;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (!client || !isSupabaseConfigured) return;
 
     const currentUserId = get().currentUser.id;
@@ -270,7 +279,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
 
       // For each membership, count messages after last_read_at from other users
       await Promise.all(
-        memberships.map(async (m: { channel_id: string; last_read_at: string }) => {
+        memberships.map(async (m: { channel_id: string; last_read_at?: string }) => {
           if (!m.last_read_at) return;
           const { count, error } = await client
             .from('messages')
@@ -312,8 +321,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     // Persist read state for the newly activated channel
     if (!isLastReadAtSupported) return;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (client && isSupabaseConfigured) {
       const currentUserId = get().currentUser.id;
       if (currentUserId && !currentUserId.startsWith('user-')) {
@@ -324,8 +332,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
           .eq('channel_id', channelId)
           .eq('user_id', currentUserId)
           .lt('last_read_at', now)
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          .then(({ error }: { error: any }) => {
+          .then(({ error }) => {
             if (error) {
               if (error.code === 'PGRST204' || error.message?.includes('last_read_at')) {
                 isLastReadAtSupported = false;
@@ -338,8 +345,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
   },
 
   fetchChannels: async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (!client || !isSupabaseConfigured) {
       const cached = getPersistedChannels();
       if (cached) {
@@ -349,14 +355,19 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     }
 
     try {
-      let { data, error } = await client
+      let data: Array<ChannelRow & { channel_members?: Array<ChannelMemberRow & { profiles?: { id?: string; name?: string | null; avatar_url?: string | null; status_text?: string | null } | null }> }> | null = null;
+      let error: { message: string } | null = null;
+
+      const res = await client
         .from('channels')
         .select('*, channel_members(*, profiles(*))');
 
-      if (error) {
+      if (res.error) {
         const fallback = await client.from('channels').select('*');
         data = fallback.data;
         error = fallback.error;
+      } else {
+        data = res.data;
       }
 
       if (error) {
@@ -365,18 +376,16 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       }
 
       if (data && Array.isArray(data)) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const mappedChannels: Channel[] = data.map((ch: any) => ({
+        const mappedChannels: Channel[] = data.map((ch) => ({
           id: ch.id,
           name: ch.name,
           description: ch.description || '',
           iconName: (ch.icon_name as ChannelIconName) || 'Hash',
           ownerId: ch.owner_id || null,
           createdAt: ch.created_at,
-          isDm: ch.is_dm === true || ch.is_dm === 'true',
+          isDm: ch.is_dm === true,
           members: Array.isArray(ch.channel_members)
-            ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              ch.channel_members.map((cm: any) => ({
+            ? ch.channel_members.map((cm) => ({
                 id: cm.profiles?.id || cm.user_id || 'unknown',
                 name: cm.profiles?.name || 'Member',
                 avatarUrl: cm.profiles?.avatar_url || '',
@@ -396,8 +405,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
   },
 
   fetchMessages: async (channelId?: string) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (!client || !isSupabaseConfigured) {
       const cached = getPersistedMessages();
       if (cached) {
@@ -417,8 +425,11 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
         query = query.eq('channel_id', targetChannelId);
       }
 
-      let { data, error } = await query;
-      if (error) {
+      let data: unknown[] | null = null;
+      let error: { message: string } | null = null;
+
+      const res = await query;
+      if (res.error) {
         const fallback = await client
           .from('messages')
           .select('*')
@@ -426,6 +437,8 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
           .order('created_at', { ascending: true });
         data = fallback.data;
         error = fallback.error;
+      } else {
+        data = res.data;
       }
 
       if (error) {
@@ -466,8 +479,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
   },
 
   subscribeToRealtime: (channelId?: string) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     const targetChannelId = channelId || get().activeChannelId;
     if (!client || !isSupabaseConfigured) {
       return () => {};
@@ -483,10 +495,9 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
           table: 'messages',
           filter: `channel_id=eq.${targetChannelId}`,
         },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        async (payload: any) => {
-          const row = payload?.new;
-          if (!row) return;
+        async (payload: RealtimePostgresChangesPayload<MessageRow>) => {
+          const row = payload?.new as MessageRow;
+          if (!row || !row.id) return;
 
           let mappedMsg = mapSupabaseMessage(row);
 
@@ -604,9 +615,8 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
           table: 'messages',
           filter: `channel_id=eq.${targetChannelId}`,
         },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (payload: any) => {
-          const row = payload?.new;
+        (payload: RealtimePostgresChangesPayload<MessageRow>) => {
+          const row = payload?.new as Partial<MessageRow> | undefined;
           if (!row) return;
 
           set((state) => {
@@ -615,7 +625,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
               m.id === String(row.id)
                 ? {
                     ...m,
-                    content: row.content,
+                    content: row.content || m.content,
                     isEdited: true,
                     attachment: row.attachment_url
                       ? {
@@ -642,9 +652,8 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
           table: 'messages',
           filter: `channel_id=eq.${targetChannelId}`,
         },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (payload: any) => {
-          const old = payload?.old;
+        (payload: RealtimePostgresChangesPayload<MessageRow>) => {
+          const old = payload?.old as Partial<MessageRow> | undefined;
           if (!old?.id) return;
 
           set((state) => {
@@ -705,8 +714,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       return { messages: updatedMessages };
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (client && isSupabaseConfigured) {
       (async () => {
         try {
@@ -838,8 +846,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       return { messages: updatedMessages };
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (client && isSupabaseConfigured) {
       try {
         const { data, error } = await client
@@ -970,8 +977,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     });
 
     // Supabase insert into 'channels' table
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (client && isSupabaseConfigured) {
       try {
         await client.from('channels').insert({
@@ -1022,8 +1028,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     });
 
     // Supabase insert into 'channel_members' table
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (client && isSupabaseConfigured) {
       const { error } = await client.from('channel_members').insert({
         channel_id: channelId,
@@ -1077,8 +1082,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       return { messages: updatedMessages };
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (client && isSupabaseConfigured) {
       const { error } = await client
         .from('messages')
@@ -1130,8 +1134,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       return { messages: updatedMessages };
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (client && isSupabaseConfigured) {
       const { error } = await client.from('messages').delete().eq('id', messageId);
 
@@ -1188,10 +1191,9 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       return { channels: updatedChannels };
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (client && isSupabaseConfigured) {
-      const payload: Record<string, string> = {};
+      const payload: ChannelUpdate = {};
       if (cleanName) payload.name = cleanName;
       if (cleanDesc !== undefined) payload.description = cleanDesc;
 
@@ -1223,8 +1225,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       return;
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (client && isSupabaseConfigured) {
       // Do DB call FIRST — destructive action should be confirmed before state update
       const { error } = await client.from('channels').delete().eq('id', channelId);
@@ -1299,8 +1300,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       return { channels: updatedChannels, activeChannelId: nextActiveId };
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (client && isSupabaseConfigured) {
       const { error } = await client
         .from('channel_members')
@@ -1369,8 +1369,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       };
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (client && isSupabaseConfigured) {
       try {
         // Try RPC first
@@ -1409,7 +1408,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
             savePersistedMessages(msgs);
             return { channels: updatedChannels, messages: msgs, activeChannelId: data };
           });
-          return data as string;
+          return data;
         }
       } catch (err) {
         console.warn('Supabase getOrCreateDmChannel RPC failed:', err);
@@ -1460,8 +1459,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       return { messages: updatedMessages };
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (client && isSupabaseConfigured) {
       try {
         const { data, error } = await client
@@ -1539,8 +1537,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
   },
 
   subscribeToChannelChanges: () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (!client || !isSupabaseConfigured) return () => {};
 
     const channel = client
@@ -1548,10 +1545,9 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'channels' },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (payload: any) => {
-          const row = payload?.new;
-          if (!row) return;
+        (payload: RealtimePostgresChangesPayload<ChannelRow>) => {
+          const row = payload?.new as ChannelRow | undefined;
+          if (!row || !row.id || !row.name) return;
           set((state) => {
             if (state.channels.some((c) => c.id === row.id)) return state;
             const newCh: Channel = {
@@ -1572,14 +1568,13 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'channels' },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (payload: any) => {
-          const row = payload?.new;
-          if (!row) return;
+        (payload: RealtimePostgresChangesPayload<ChannelRow>) => {
+          const row = payload?.new as Partial<ChannelRow> | undefined;
+          if (!row || !row.id) return;
           set((state) => {
             const updated = state.channels.map((c) =>
               c.id === row.id
-                ? { ...c, name: row.name, description: row.description || c.description }
+                ? { ...c, name: row.name || c.name, description: row.description !== undefined ? row.description || '' : c.description }
                 : c
             );
             savePersistedChannels(updated);
@@ -1590,9 +1585,8 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       .on(
         'postgres_changes',
         { event: 'DELETE', schema: 'public', table: 'channels' },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (payload: any) => {
-          const old = payload?.old;
+        (payload: RealtimePostgresChangesPayload<ChannelRow>) => {
+          const old = payload?.old as Partial<ChannelRow> | undefined;
           if (!old?.id) return;
           set((state) => {
             const updated = state.channels.filter((c) => c.id !== old.id);
@@ -1611,8 +1605,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
   },
 
   subscribeToReadStateChanges: () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
+    const client = supabase;
     if (!client || !isSupabaseConfigured) return () => {};
 
     const currentUserId = get().currentUser.id;
@@ -1628,9 +1621,8 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
           table: 'channel_members',
           filter: `user_id=eq.${currentUserId}`,
         },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (payload: any) => {
-          const row = payload?.new;
+        (payload: RealtimePostgresChangesPayload<ChannelMemberRow>) => {
+          const row = payload?.new as Partial<ChannelMemberRow> | undefined;
           if (!row?.channel_id || !row?.last_read_at) return;
           // Another device updated read state — re-fetch unread counts for all channels
           get().fetchUnreadCounts?.();

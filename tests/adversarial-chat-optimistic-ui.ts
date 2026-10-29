@@ -25,6 +25,7 @@ import { MessageItem } from '../src/components/Chat/MessageItem';
 import { MessageInput } from '../src/components/Chat/MessageInput';
 import { StatusIndicator } from '../src/components/Chat/StatusIndicator';
 import { useWorkspaceStore } from '../src/store/useWorkspaceStore';
+import { useAuthStore } from '../src/store/useAuthStore';
 import type { Message } from '../src/types';
 
 // ============================================================================
@@ -41,13 +42,16 @@ const hookDispatcherProxy = new Proxy({}, {
     if (prop === 'useSyncExternalStore') return (_sub: any, snap: any) => snap();
     if (prop === 'useState') {
       return (init: any) => {
-        const val = customInputVal !== null ? customInputVal : (typeof init === 'function' ? init() : init);
+        const isStringState = typeof init === 'string';
+        const val = isStringState && customInputVal !== null ? customInputVal : (typeof init === 'function' ? init() : init);
         return [
           val,
           (newVal: any) => {
             const resolved = typeof newVal === 'function' ? newVal(val) : newVal;
-            lastInputStateSet = resolved;
-            customInputVal = resolved;
+            if (isStringState) {
+              lastInputStateSet = resolved;
+              customInputVal = resolved;
+            }
           },
         ];
       };
@@ -91,9 +95,26 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function findElementByTestId(element: any, testId: string): any {
+  if (!element || typeof element !== 'object') return null;
+  if (element.props?.['data-testid'] === testId) return element;
+  const children = Array.isArray(element.props?.children)
+    ? element.props.children
+    : [element.props?.children];
+  for (const child of children) {
+    const found = findElementByTestId(child, testId);
+    if (found) return found;
+  }
+  return null;
+}
+
 function resetTestStore(): void {
   customInputVal = null;
   lastInputStateSet = null;
+  useAuthStore.setState({
+    isInitialized: true,
+    user: { id: 'usr-challenger-m3', email: 'challenger@test.com', name: 'Adversarial Challenger' },
+  });
   useWorkspaceStore.setState({
     channels: [
       { id: 'general', name: 'general', description: 'Company-wide announcements and team discussions', iconName: 'Hash' },
@@ -342,7 +363,7 @@ async function runMilestone3Verification() {
   // 3.2 Enter Key Submission clears input immediately
   customInputVal = 'Second message via Enter key';
   const renderedInputFormEnter = (MessageInput as any)({});
-  const inputChild = renderedInputFormEnter.props.children.props.children[0];
+  const inputChild = findElementByTestId(renderedInputFormEnter, 'message-input');
 
   let enterPrevented = false;
   inputChild.props.onKeyDown({
@@ -367,7 +388,7 @@ async function runMilestone3Verification() {
   customInputVal = 'Multiline text';
   lastInputStateSet = null;
   const renderedInputShift = (MessageInput as any)({});
-  const inputChildShift = renderedInputShift.props.children.props.children[0];
+  const inputChildShift = findElementByTestId(renderedInputShift, 'message-input');
 
   let shiftEnterPrevented = false;
   inputChildShift.props.onKeyDown({

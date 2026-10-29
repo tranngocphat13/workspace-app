@@ -59,13 +59,11 @@ export const SearchModal: React.FC<SearchModalProps> = ({ isOpen, onClose }) => 
       setIsLoading(true);
       setSearchError(null);
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const client = supabase as any;
-      if (client && isSupabaseConfigured) {
+      if (supabase && isSupabaseConfigured) {
         try {
           // Use ILIKE with pg_trgm index — RLS enforced server-side (only member channels visible)
           // Fetch one extra row to detect whether more pages exist
-          const { data, error } = await client
+          const { data, error } = await supabase
             .from('messages')
             .select('*, sender:profiles(*)')
             .ilike('content', `%${clean}%`)
@@ -82,8 +80,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({ isOpen, onClose }) => 
           const hasMoreResults = rows.length > PAGE_SIZE;
           const sliced = rows.slice(0, PAGE_SIZE);
 
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const mapped: SearchResult[] = sliced.map((row: any) => {
+          const mapped: SearchResult[] = sliced.map((row) => {
             const msg = mapSupabaseMessage(row);
             const chInfo = channelMap.get(msg.channelId) || {
               name: msg.channelId,

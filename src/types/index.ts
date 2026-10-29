@@ -149,6 +149,7 @@ export type ChannelRow = {
   icon_name: ChannelIconName;
   owner_id: string | null;
   is_dm?: boolean;
+  is_public?: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -159,6 +160,8 @@ export type ChannelInsert = {
   description?: string | null;
   icon_name?: ChannelIconName;
   owner_id?: string | null;
+  is_dm?: boolean;
+  is_public?: boolean;
   created_at?: string;
   updated_at?: string;
 };
@@ -168,6 +171,8 @@ export type ChannelUpdate = {
   description?: string | null;
   icon_name?: ChannelIconName;
   owner_id?: string | null;
+  is_dm?: boolean;
+  is_public?: boolean;
   updated_at?: string;
 };
 
@@ -176,6 +181,7 @@ export type ChannelMemberRow = {
   user_id: string;
   role: ChannelMemberRole;
   joined_at: string;
+  last_read_at?: string;
 };
 
 export type ChannelMemberInsert = {
@@ -183,10 +189,12 @@ export type ChannelMemberInsert = {
   user_id: string;
   role?: ChannelMemberRole;
   joined_at?: string;
+  last_read_at?: string;
 };
 
 export type ChannelMemberUpdate = {
   role?: ChannelMemberRole;
+  last_read_at?: string;
 };
 
 export type MessageRow = {
@@ -210,12 +218,22 @@ export type MessageInsert = {
   sender_id: string;
   content: string;
   client_message_id?: string | null;
+  is_edited?: boolean;
+  attachment_url?: string | null;
+  attachment_name?: string | null;
+  attachment_type?: string | null;
+  attachment_size?: number | null;
   created_at?: string;
   updated_at?: string;
 };
 
 export type MessageUpdate = {
   content?: string;
+  is_edited?: boolean;
+  attachment_url?: string | null;
+  attachment_name?: string | null;
+  attachment_type?: string | null;
+  attachment_size?: number | null;
   updated_at?: string;
 };
 
@@ -234,19 +252,57 @@ export interface Database {
         Row: ChannelRow;
         Insert: ChannelInsert;
         Update: ChannelUpdate;
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "channels_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          }
+        ];
       };
       channel_members: {
         Row: ChannelMemberRow;
         Insert: ChannelMemberInsert;
         Update: ChannelMemberUpdate;
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "channel_members_channel_id_fkey";
+            columns: ["channel_id"];
+            isOneToOne: false;
+            referencedRelation: "channels";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "channel_members_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          }
+        ];
       };
       messages: {
         Row: MessageRow;
         Insert: MessageInsert;
         Update: MessageUpdate;
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "messages_channel_id_fkey";
+            columns: ["channel_id"];
+            isOneToOne: false;
+            referencedRelation: "channels";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "messages_sender_id_fkey";
+            columns: ["sender_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          }
+        ];
       };
     };
     Views: {
@@ -269,6 +325,12 @@ export interface Database {
           p_icon_name?: string;
         };
         Returns: ChannelRow;
+      };
+      get_or_create_dm: {
+        Args: {
+          target_user_id: string;
+        };
+        Returns: string;
       };
     };
   };

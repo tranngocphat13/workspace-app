@@ -65,12 +65,10 @@ export const Sidebar: React.FC = () => {
     setCustomUserId('');
     setIsAddMemberOpen(true);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = supabase as any;
-    if (client && isSupabaseConfigured && currentUser) {
+    if (supabase && isSupabaseConfigured && currentUser) {
       setProfilesLoading(true);
       try {
-        const { data, error } = await client
+        const { data, error } = await supabase
           .from('profiles')
           .select('id, name, avatar_url, status_text')
           .neq('id', currentUser.id)
@@ -80,8 +78,7 @@ export const Sidebar: React.FC = () => {
         if (error) {
           setProfilesError('Could not load users: ' + error.message);
         } else if (data) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const users: User[] = data.map((p: any) => ({
+          const users: User[] = data.map((p) => ({
             id: p.id,
             name: p.name || 'Member',
             avatarUrl: p.avatar_url || undefined,
@@ -118,11 +115,9 @@ export const Sidebar: React.FC = () => {
     userToAdd = realProfiles.find((u) => u.id === targetId) || null;
 
     // If not found (custom UUID entered), try to look it up from DB
-    if (!userToAdd && isSupabaseConfigured) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const client = supabase as any;
+    if (!userToAdd && isSupabaseConfigured && supabase) {
       try {
-        const { data } = await client
+        const { data } = await supabase
           .from('profiles')
           .select('id, name, avatar_url, status_text')
           .eq('id', targetId)
@@ -131,7 +126,7 @@ export const Sidebar: React.FC = () => {
           userToAdd = {
             id: data.id,
             name: data.name || 'Member',
-            avatarUrl: data.avatar_url,
+            avatarUrl: data.avatar_url || undefined,
             statusText: data.status_text || 'Online',
           };
         }

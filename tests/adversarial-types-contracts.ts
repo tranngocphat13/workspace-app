@@ -64,7 +64,7 @@ export type ExpectedTables = 'profiles' | 'channels' | 'channel_members' | 'mess
 export type TestDatabaseTableKeys = Assert<IfEquals<keyof Database['public']['Tables'], ExpectedTables>>;
 
 // 5. Database RPC functions must have exact keys
-export type ExpectedFunctions = 'is_channel_member' | 'get_channel_role' | 'create_channel_atomic';
+export type ExpectedFunctions = 'is_channel_member' | 'get_channel_role' | 'create_channel_atomic' | 'get_or_create_dm';
 export type TestDatabaseFunctionKeys = Assert<IfEquals<keyof Database['public']['Functions'], ExpectedFunctions>>;
 
 // ============================================================================
@@ -240,8 +240,9 @@ function testSupabaseClientContract() {
     'is_channel_member',
     'get_channel_role',
     'create_channel_atomic',
+    'get_or_create_dm',
   ];
-  assert(rpcNames.length === 3, 'SupabaseClient exposes 3 security definer RPC functions');
+  assert(rpcNames.length === 4, 'SupabaseClient exposes 4 security definer RPC functions');
 }
 
 // ============================================================================

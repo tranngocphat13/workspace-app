@@ -47,13 +47,11 @@ export async function uploadAttachment(
     throw new Error(validation.error || 'Invalid file');
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const client = supabase as any;
-  if (client && isSupabaseConfigured) {
+  if (supabase && isSupabaseConfigured) {
     const cleanFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
     const filePath = `${userId}/${Date.now()}-${cleanFileName}`;
 
-    const { error: uploadError } = await client.storage
+    const { error: uploadError } = await supabase.storage
       .from('chat-attachments')
       .upload(filePath, file, {
         cacheControl: '3600',
@@ -112,15 +110,13 @@ export async function getSignedUrl(
   storagePath: string,
   expiresInSeconds = 3600
 ): Promise<string | null> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const client = supabase as any;
-  if (!client || !isSupabaseConfigured) return null;
+  if (!supabase || !isSupabaseConfigured) return null;
   try {
-    const { data, error } = await client.storage
+    const { data, error } = await supabase.storage
       .from('chat-attachments')
       .createSignedUrl(storagePath, expiresInSeconds);
     if (error || !data?.signedUrl) return null;
-    return data.signedUrl as string;
+    return data.signedUrl;
   } catch {
     return null;
   }

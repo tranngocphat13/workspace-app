@@ -11,8 +11,8 @@ export const UserFooter: React.FC = () => {
   const logout = useAuthStore((state) => state.logout);
   const [imageError, setImageError] = useState(false);
 
-  // Prefer the logged-in auth user, fall back to store user
-  const displayUser = authUser ?? currentUser;
+  // Prefer workspace store user (where active session / overrides live), fall back to auth user
+  const displayUser = currentUser || authUser;
 
   const getInitials = (name: string): string => {
     return name
@@ -60,7 +60,7 @@ export const UserFooter: React.FC = () => {
             {displayUser?.name || 'Anonymous'}
           </div>
           <div className="text-[11px] text-zinc-400 truncate">
-            {authUser?.email ?? displayUser?.statusText ?? 'Online'}
+            {displayUser?.statusText || authUser?.email || 'Online'}
           </div>
         </div>
       </div>
